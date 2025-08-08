@@ -19,7 +19,7 @@ find_package(nav_msgs REQUIRED)
 #--------------------------------------------------------------
 # List sources
 set(SlamRosNode_SRC
-  src/SlamRosNode_impl.cpp
+  src/slam_ros_node/SlamRosNode_impl.cpp
 )
 # List headers
 set(SlamRosNode_HEADERS
@@ -41,7 +41,7 @@ ament_target_dependencies(SlamRosNode_lib
 
 # Create an executable
 ament_auto_add_executable(SlamRosNode_exe
-    src/SlamRosNode_main.cpp
+    src/slam_ros_node/SlamRosNode_main.cpp
 )
 
 # Link the library to the executable
@@ -51,6 +51,45 @@ target_link_libraries(SlamRosNode_exe
 
 # Install the executable
 install(TARGETS SlamRosNode_exe
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+#--------------------------------------------------------------
+#                     NoisyOdomNode Node
+#--------------------------------------------------------------
+# List sources
+set(NoisyOdomNode_SRC
+  src/noisy_odom/NoisyOdomNode_impl.cpp
+)
+# List headers
+set(NoisyOdomNode_HEADERS
+  include/noisy_odom/NoisyOdomNode_impl.hpp
+)
+# Create a shared (.so) library
+ament_auto_add_library(NoisyOdomNode_lib
+    ${NoisyOdomNode_SRC}
+    ${NoisyOdomNode_HEADERS}
+)
+
+ament_target_dependencies(NoisyOdomNode_lib
+  rclcpp
+  rclcpp_components
+  std_msgs
+  nav_msgs
+)
+
+# Create an executable
+ament_auto_add_executable(NoisyOdomNode_exe
+    src/noisy_odom/NoisyOdomNode_main.cpp
+)
+
+# Link the library to the executable
+target_link_libraries(NoisyOdomNode_exe
+  NoisyOdomNode_lib
+)
+
+# Install the executable
+install(TARGETS NoisyOdomNode_exe
   DESTINATION lib/${PROJECT_NAME}
 )
 
