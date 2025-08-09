@@ -1,4 +1,4 @@
-#include "trajectory_node/TrajectoryNode_impl.hpp"
+#include "noisy_odom/NoisyOdomNode_impl.hpp"
 #include <cstdio>
 
 int main(int argc, char **argv)
@@ -7,10 +7,12 @@ int main(int argc, char **argv)
     rclcpp::executors::StaticSingleThreadedExecutor executor;
     rclcpp::NodeOptions options;
 
-    auto pTrajectoryNode = std::make_shared<trajectory_node::TrajectoryNode>(options);
-    executor.add_node(pTrajectoryNode);
+    auto pNoisyOdomNode = std::make_shared<noisy_odom::NoisyOdomNode>(options);
+    executor.add_node(pNoisyOdomNode);
     executor.spin();
 
     rclcpp::shutdown();
     return 0;
 }
+
+

@@ -26,11 +26,13 @@ namespace noisy_odom {
         // Mutex for thread safety
         std::mutex mutex_;
         // Parameters
-        double pos_stddev_;
-        double rot_stddev_;
+        double pos_stddev_{};
+        double rot_stddev_{};
         // Random number generator
         std::mt19937 gen_;
         std::normal_distribution<> pos_dist_;
         std::normal_distribution<> rot_dist_;
     };
 }
+
+

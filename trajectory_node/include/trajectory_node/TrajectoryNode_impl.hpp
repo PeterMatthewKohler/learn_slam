@@ -27,32 +27,17 @@ namespace trajectory_node {
         TrajectoryNode(const rclcpp::NodeOptions& options);
 
         private:
-        // Service clients
         rclcpp::Client<nav_msgs::srv::GetPlan>::SharedPtr trajectoryServiceClient;
-        
-        // Publishers
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher;
-        
-        // Service server to trigger trajectory sending
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr sendTrajectoryService;
-        
-        // Timer for periodic trajectory sending
         rclcpp::TimerBase::SharedPtr trajectoryTimer;
-        
-        // Parameters
         std::string trajectoryFilePath;
         std::string targetServiceName;
-        double sendFrequency;
-        bool autoSend;
-        
-        // Internal data
+        double sendFrequency{};
+        bool autoSend{};
         std::vector<TrajectoryPoint> trajectory;
-        bool trajectoryLoaded;
-        
-        // Mutex for thread safety
+        bool trajectoryLoaded{};
         std::mutex mutex_;
-        
-        // Methods
         bool loadTrajectoryFromJson(const std::string& filePath);
         void trajectoryTimerCallback();
         void sendTrajectoryServiceCallback(
@@ -61,10 +46,10 @@ namespace trajectory_node {
         void sendTrajectory();
         nav_msgs::msg::Path convertToPath(const std::vector<TrajectoryPoint>& trajectory);
         void publishPath(const nav_msgs::msg::Path& path);
-        
-        // JSON parsing helpers
         TrajectoryPoint parseTrajectoryPoint(const nlohmann::json& pointJson);
     };
 }
 
 #endif // TRAJECTORY_NODE_IMPL_HPP
+
+

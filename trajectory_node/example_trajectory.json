@@ -1,0 +1,22 @@
+{
+  "trajectory": [
+    { "x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "timestamp": 0.0 },
+    { "x": 1.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "timestamp": 1.0 },
+    { "x": 2.0, "y": 1.0, "z": 0.0, "yaw": 0.785, "timestamp": 2.0 },
+    { "x": 3.0, "y": 2.0, "z": 0.0, "yaw": 0.785, "timestamp": 3.0 },
+    { "x": 4.0, "y": 2.0, "z": 0.0, "yaw": 0.0, "timestamp": 4.0 },
+    { "x": 5.0, "y": 2.0, "z": 0.0, "yaw": 0.0, "timestamp": 5.0 },
+    { "x": 6.0, "y": 1.0, "z": 0.0, "yaw": -0.785, "timestamp": 6.0 },
+    { "x": 7.0, "y": 0.0, "z": 0.0, "yaw": -0.785, "timestamp": 7.0 },
+    { "x": 8.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "timestamp": 8.0 }
+  ],
+  "metadata": {
+    "description": "Example rectangular trajectory for autonomous robot",
+    "created_date": "2024-01-01",
+    "frame_id": "map",
+    "total_points": 9,
+    "duration_seconds": 8.0
+  }
+}
+
+
