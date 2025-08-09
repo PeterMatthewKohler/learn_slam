@@ -13,6 +13,9 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>nlohmann_json</depend>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

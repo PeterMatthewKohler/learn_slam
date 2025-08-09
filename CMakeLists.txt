@@ -13,6 +13,9 @@ find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 #--------------------------------------------------------------
 #                     SlamRosNode Node
@@ -91,6 +94,58 @@ target_link_libraries(NoisyOdomNode_exe
 # Install the executable
 install(TARGETS NoisyOdomNode_exe
   DESTINATION lib/${PROJECT_NAME}
+)
+
+#--------------------------------------------------------------
+#                     TrajectoryNode Node
+#--------------------------------------------------------------
+# List sources
+set(TrajectoryNode_SRC
+  src/trajectory_node/TrajectoryNode_impl.cpp
+)
+# List headers
+set(TrajectoryNode_HEADERS
+  include/trajectory_node/TrajectoryNode_impl.hpp
+)
+# Create a shared (.so) library
+ament_auto_add_library(TrajectoryNode_lib
+    ${TrajectoryNode_SRC}
+    ${TrajectoryNode_HEADERS}
+)
+
+ament_target_dependencies(TrajectoryNode_lib
+  rclcpp
+  rclcpp_components
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  std_srvs
+)
+
+# Create an executable
+ament_auto_add_executable(TrajectoryNode_exe
+    src/trajectory_node/TrajectoryNode_main.cpp
+)
+
+# Link the library to the executable
+target_link_libraries(TrajectoryNode_exe
+  TrajectoryNode_lib
+  nlohmann_json::nlohmann_json
+)
+
+# Install the executable
+install(TARGETS TrajectoryNode_exe
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install launch files
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch/
+)
+
+# Install example trajectory file
+install(FILES example_trajectory.json
+  DESTINATION share/${PROJECT_NAME}/
 )
 
 if(BUILD_TESTING)
