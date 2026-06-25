@@ -2,8 +2,8 @@ noisy_wheel_odom_node:
   ros__parameters:
     wheel_base: 0.413        # meters
     wheel_radius: 0.140      # meters
-    pos_noise_stddev: 0.01 # optional existing param, keep default
-    rot_noise_stddev: 0.01 # optional existing param, keep default
+    pos_noise_stddev: 0.0012 # optional existing param, keep default
+    rot_noise_stddev: 0.052 # optional existing param, keep default
     left_wheel_joint_name: joint_wheel_left
     right_wheel_joint_name: joint_wheel_right
     odom_frame_id: odom
