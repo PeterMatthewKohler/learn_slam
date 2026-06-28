@@ -1,0 +1,9 @@
+vio_node:
+  ros__parameters:
+    imu_sub_topic_name: "/chassis/imu"
+    left_img_sub_topic_name: "/front_stereo_camera/left/image_raw"
+    left_camera_info_sub_topic_name: "/front_stereo_camera/left/camera_info"
+    right_img_sub_topic_name: "/front_stereo_camera/right/image_raw"
+    right_camera_info_sub_topic_name: "/front_stereo_camera/right/camera_info"
+    odom_sub_topic_name: "/chassis/odom"
+    vio_pub_topic_name: "/vio/odom"
