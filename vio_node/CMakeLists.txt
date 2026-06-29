@@ -22,7 +22,7 @@ find_package(tf2_msgs REQUIRED)
 
 set(VIONode_SRC
     src/VIONode_impl.cpp
-    src/CV_Helpers.cpp
+    src/CV_Functions.cpp
 )
 
 set(VIONode_HEADERS

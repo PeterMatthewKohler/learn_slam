@@ -28,6 +28,44 @@
 
 
 namespace vio_node {
+        // Helper structs
+        // Stereo Tracking
+        struct StereoFeature {
+            int id = -1;
+
+            cv::Point2f px_left;
+            cv::Point2f px_right;
+
+            double disparity = 0.0;
+            double depth_m = 0.0;
+
+            // 3D point in rectified left frame
+            cv::Point3d point_left_cam;
+        };
+
+        struct StereoCalibration {
+            double fx = 0.0;
+            double fy = 0.0;
+            double cx = 0.0;
+            double cy = 0.0;
+            double baseline_m = 0.0;
+
+            bool initialized = false;
+        };
+
+        // OpenCV Helpers
+        struct RectificationData {
+            cv::Mat K;
+            cv::Mat D;
+            cv::Mat R;
+            cv::Mat P_rect_3x3;
+
+            cv::Mat map1;
+            cv::Mat map2;
+
+            bool initialized = false;
+        };
+
     class VIONode : public rclcpp::Node
     {
         public:
@@ -37,6 +75,7 @@ namespace vio_node {
         void initPubSubs(); // Helper function
         // Publishers
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr vioOdomPub_;
+        rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debugStereoFeaturePub_;
         // Subscribers
         // IMU
         rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub_;
@@ -60,20 +99,11 @@ namespace vio_node {
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSub_;
         void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg);
 
-        // OpenCV Helpers
-        struct RectificationData {
-            cv::Mat K;
-            cv::Mat D;
-            cv::Mat R;
-            cv::Mat P_rect_3x3;
-
-            cv::Mat map1;
-            cv::Mat map2;
-
-            bool initialized = false;
-        };
         void initializeRectification(const sensor_msgs::msg::CameraInfo& info,
                                      RectificationData& rect);
+        void initializeStereoCalibration(const sensor_msgs::msg::CameraInfo& left_info,
+                                        const sensor_msgs::msg::CameraInfo& right_info,
+                                        StereoCalibration& calib);
 
         cv::Mat cameraMatrixFromInfo(const sensor_msgs::msg::CameraInfo& info);
         cv::Mat distortionFromInfo(const sensor_msgs::msg::CameraInfo& info);
@@ -82,6 +112,15 @@ namespace vio_node {
         bool saveRectifiedImage(const cv::Mat& rectified_img,
                                 const std::string& output_dir,
                                 const std::string& filename);
+        std::vector<cv::Point2f> detectLeftFeatures(const cv::Mat& leftRectMap);
+        std::vector<StereoFeature> matchStereoFeatures(const cv::Mat& leftRectImg,
+                                                       const cv::Mat& rightRectImg,
+                                                       const StereoCalibration& calib);
+        void processRectifiedStereo(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
+                                    const rclcpp::Time& stamp);
+        cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
+                                     const std::vector<StereoFeature>& features);
+
         // TF2
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -92,6 +131,7 @@ namespace vio_node {
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         RectificationData leftRectMap_;
         RectificationData rightRectMap_;
+        StereoCalibration stereoCalib_;
         std::optional<nav_msgs::msg::Odometry> initVehOdom_;
         std::optional<nav_msgs::msg::Odometry> currentVIOOdom_;
         // Mutex for thread safety
@@ -105,9 +145,7 @@ namespace vio_node {
         std::string rightCameraInfoSubTopicName_;
         std::string odomSubTopicName_;
         std::string vioPubTopicName_;
-
-        bool saved_ = false;
-
+        bool publishDebugStereoFeatures_;
     };
 
 }   // namespace vio_node

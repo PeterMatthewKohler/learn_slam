@@ -13,9 +13,12 @@ namespace vio_node {
     void VIONode::initPubSubs()
     {
         // Initialize publishers and subscribers
-        auto sensorQOS = rclcpp::SensorDataQoS();
-
+        // Publishers
         vioOdomPub_ = this->create_publisher<nav_msgs::msg::Odometry>(vioPubTopicName_, 10);
+        if(publishDebugStereoFeatures_){debugStereoFeaturePub_ = 
+                                            this->create_publisher<sensor_msgs::msg::Image>("debug/StereoFeatures", 10);}
+        // Subscribers
+        auto sensorQOS = rclcpp::SensorDataQoS();
         imuSub_ = this->create_subscription<sensor_msgs::msg::Imu>(
             imuSubTopicName_, 10, std::bind(&VIONode::imuCallback, this, std::placeholders::_1));
         // Synchronize stereo camera image subscribers
@@ -25,19 +28,17 @@ namespace vio_node {
         rightImgSub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
             this, rightImgSubTopicName_, sensorQOS.get_rmw_qos_profile()
         );
-
         sync_ = std::make_shared<message_filters::Synchronizer<StereoSyncPolicy>>(
             StereoSyncPolicy(10), *leftImgSub_, *rightImgSub_
         );
         sync_->registerCallback(std::bind(&VIONode::stereoCallback, this, std::placeholders::_1, std::placeholders::_2));
         sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.01));
-
+        // Camera info
         leftCameraInfoSub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             leftCameraInfoSubTopicName_, 10, std::bind(&VIONode::leftCameraInfoCallback, this, std::placeholders::_1));
-
-
         rightCameraInfoSub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             rightCameraInfoSubTopicName_, 10, std::bind(&VIONode::rightCameraInfoCallback, this, std::placeholders::_1));
+        // Initial position odometry subscriber
         odomSub_ = this->create_subscription<nav_msgs::msg::Odometry>(
             odomSubTopicName_, 10, std::bind(&VIONode::odomCallback, this, std::placeholders::_1));
     }
@@ -64,6 +65,9 @@ namespace vio_node {
 
         this->declare_parameter("vio_pub_topic_name", "/vio/odom");
         vioPubTopicName_ = this->get_parameter("vio_pub_topic_name").as_string();
+
+        this->declare_parameter("publish_debug_stereo_features", false);
+        publishDebugStereoFeatures_ = this->get_parameter("publish_debug_stereo_features").as_bool();
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
@@ -74,17 +78,28 @@ namespace vio_node {
 
     void VIONode::leftCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
     {   // These should never change/deviate at runtime
+        std::lock_guard<std::mutex> lock(dataMutex_);
         if(!currentLeftCamInfo_.has_value()){
-            std::lock_guard<std::mutex> lock(dataMutex_);
             currentLeftCamInfo_.emplace(*msg);
             initializeRectification(currentLeftCamInfo_.value(), leftRectMap_);
+        }
+        else if(!stereoCalib_.initialized && 
+                currentLeftCamInfo_.has_value() && currentRightCamInfo_.has_value()){
+            initializeStereoCalibration(currentLeftCamInfo_.value(), currentRightCamInfo_.value(), stereoCalib_);
+            RCLCPP_INFO(get_logger(),
+                        "Stereo calib: fx=%.3f fy=%.3f cx=%.3f cy=%.3f baseline=%.4f m",
+                        stereoCalib_.fx,
+                        stereoCalib_.fy,
+                        stereoCalib_.cx,
+                        stereoCalib_.cy,
+                        stereoCalib_.baseline_m);
         }
     }
 
     void VIONode::rightCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
     {   // These should never change/deviate at runtime
+        std::lock_guard<std::mutex> lock(dataMutex_);
         if(!currentRightCamInfo_.has_value()){
-            std::lock_guard<std::mutex> lock(dataMutex_);
             currentRightCamInfo_.emplace(*msg);
             initializeRectification(currentRightCamInfo_.value(), rightRectMap_);
         }
@@ -102,14 +117,31 @@ namespace vio_node {
             );
             return;
         }
+        // DEBUG SLOW RUNRATE
+        static size_t callback_count = 0;
+        static size_t rejected_dt_count = 0;
+        static size_t processed_count = 0;
+        callback_count++;
+
         // Simple check to ensure synchronization
         const auto left_stamp = rclcpp::Time(left_msg->header.stamp);
         const auto right_stamp = rclcpp::Time(right_msg->header.stamp);
         const double stereo_dt = std::abs((left_stamp - right_stamp).seconds());
-        if (stereo_dt > 0.005) {
-            RCLCPP_WARN(get_logger(), "Stereo pair too far apart: %.6f", stereo_dt);
+        if (stereo_dt > 0.010) {
+            rejected_dt_count++;
+            RCLCPP_INFO_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Rejecting stereo pair: dt=%.6f, callbacks=%zu rejected_dt=%zu processed=%zu",
+                stereo_dt,
+                callback_count,
+                rejected_dt_count,
+                processed_count
+            );
             return;
         }
+        processed_count++;
         // Rectify the stereo pair of images
         cv_bridge::CvImageConstPtr left_cv;
         cv_bridge::CvImageConstPtr right_cv;
@@ -140,7 +172,8 @@ namespace vio_node {
             cv::INTER_LINEAR
         );
 
-        //processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
+        processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
+
     }
 
     void VIONode::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg)
