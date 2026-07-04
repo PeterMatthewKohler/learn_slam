@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -23,7 +24,11 @@
 // #include <opencv2/highgui.hpp>
 // #include <opencv2/imgcodecs.hpp>
 // C++ Includes
+#include <cmath>
+#include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
 
 
@@ -41,6 +46,22 @@ namespace vio_node {
 
             // 3D point in rectified left frame
             cv::Point3d point_left_cam;
+        };
+
+        struct TrackedFeature {
+            int id = -1;
+
+            cv::Point2f px_left_prev;
+            cv::Point2f px_left_curr;
+            cv::Point2f px_right_curr;
+
+            double disparity = 0.0;
+            double depth_m = 0.0;
+
+            cv::Point3d point_left_cam_prev;
+            cv::Point3d point_left_cam_curr;
+
+            int age = 0;
         };
 
         struct StereoCalibration {
@@ -112,12 +133,21 @@ namespace vio_node {
         bool saveRectifiedImage(const cv::Mat& rectified_img,
                                 const std::string& output_dir,
                                 const std::string& filename);
-        std::vector<cv::Point2f> detectLeftFeatures(const cv::Mat& leftRectMap);
+        std::vector<cv::Point2f> detectLeftFeatures(const cv::Mat& leftRectMap,
+                                                    const cv::Mat& mask,
+                                                    int max_corners);
         std::vector<StereoFeature> matchStereoFeatures(const cv::Mat& leftRectImg,
                                                        const cv::Mat& rightRectImg,
                                                        const StereoCalibration& calib);
         void processRectifiedStereo(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                     const rclcpp::Time& stamp);
+        void trackExistingFeaturesTemporal(const cv::Mat& prev_left, const cv::Mat& curr_left);
+        void updateStereoDepthForTrackedFeatures(const cv::Mat& curr_left, const cv::Mat& curr_right,
+                                                 const StereoCalibration& calib);
+        cv::Mat buildFeatureDetectionMask(const cv::Size& image_size,
+                                          const std::vector<TrackedFeature>& existing_features) const;
+        void addNewTrackedFeatures(const cv::Mat& left, const cv::Mat& right,
+                                   const StereoCalibration& calib, int max_new_features);
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
 
@@ -134,6 +164,11 @@ namespace vio_node {
         StereoCalibration stereoCalib_;
         std::optional<nav_msgs::msg::Odometry> initVehOdom_;
         std::optional<nav_msgs::msg::Odometry> currentVIOOdom_;
+        // Stereo tracking
+        cv::Mat prev_left_rectified_;
+        std::vector<TrackedFeature> tracked_features_;
+        int next_feature_id_ = 0;
+        int frame_idx_ = 0;
         // Mutex for thread safety
         std::mutex dataMutex_;
         // Parameters

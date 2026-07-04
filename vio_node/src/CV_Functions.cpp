@@ -1,6 +1,8 @@
 #include <vio_node/VIONode_impl.hpp>
 #include <filesystem>
 #include <iostream>
+#include <std_msgs/msg/header.hpp>
+#include <utility>
 
 namespace vio_node {
     // OpenCV Helper Functions
@@ -120,24 +122,25 @@ namespace vio_node {
         return true;
     }
 
-    std::vector<cv::Point2f> VIONode::detectLeftFeatures(const cv::Mat& leftRectMap)
+    std::vector<cv::Point2f> VIONode::detectLeftFeatures(const cv::Mat& leftRectMap,
+                                                         const cv::Mat& mask,
+                                                         int max_corners)
     {
         std::vector<cv::Point2f> points;
 
-        const int max_corners = 1000;
         const double quality_level = 0.01;
         const double min_distance = 15.0;
         const int block_size = 7;
         const bool use_harris = false;
         const double k = 0.04;
-
+        // Really expensive, how can I minimize usage here?
         cv::goodFeaturesToTrack(
             leftRectMap,    // Input grayscale img
             points,         // Output vector of corners
             max_corners,    // Max number of corners to return
             quality_level,  // Characterizes min accepted quality of image corners
             min_distance,   // Min possible euclidean distance between returned corners
-            cv::Mat(),      // Optional: Region of interest - empty to use whole input img
+            mask,           // Optional: Region of interest - empty to use whole input img
             block_size,     // Size of averaging block for computing derivative
             use_harris,     // Indicates, whether to use operator or cornerMinEigenVal()
             k               // Free parameter of Harris detector
@@ -155,122 +158,6 @@ namespace vio_node {
             );
         }
         return points;
-    }
-
-    // Track left features onto the right image
-    // Images are rectified, match should move mostly horizontally
-    // Return vector of metric 3D points in rectified left camera frame
-    std::vector<StereoFeature> VIONode::matchStereoFeatures(const cv::Mat& leftRectImg,
-                                                            const cv::Mat& rightRectImg,
-                                                            const StereoCalibration& calib)
-    {
-        std::vector<StereoFeature> stereo_features;
-
-        if(!calib.initialized || calib.baseline_m <= 0.0){return stereo_features;}
-
-        std::vector<cv::Point2f> left_points = detectLeftFeatures(leftRectImg);
-        if(left_points.empty()){return stereo_features;}
-
-        // Find the matching right points
-        std::vector<cv::Point2f> right_points;
-        std::vector<unsigned char> status;
-        std::vector<float> errors;
-        // calculates the sub-pixel coordinates of a set of feature points
-        // in a new frame based on their positions in the previous frame
-        cv::calcOpticalFlowPyrLK(
-            leftRectImg,            // prevImg
-            rightRectImg,           // nextImg
-            left_points,            // prevPts
-            right_points,           // nextPts
-            status,                 // output status vector
-            errors,                 // output vector w/ tracking error for each feature
-            cv::Size(21,21),        // Window size
-            3,                      // Max level 0-based maximal pyramid level number
-            cv::TermCriteria(       // Specifies termination criteria
-                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
-                30,
-                0.01
-            )
-        );
-
-        int next_feature_id = 0;
-        // Stereo match filters
-        const double max_y_error_px = 2.0;
-        const double min_depth_m = 0.25;
-        const double max_depth_m = 30.0;
-        const double min_disparity_px = calib.fx * calib.baseline_m / max_depth_m;
-        const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
-        const float max_lk_error = 20.0f;
-        // Debug counters
-        size_t tracked_count = 0;
-        size_t y_ok_count = 0;
-        size_t disparity_ok_count = 0;
-        size_t error_ok_count = 0;
-        size_t depth_ok_count = 0;
-
-        // ---- VALIDATION BLOCK ---- TODO REMOVE
-        // std::vector<cv::Point2f> left_points_back;
-        // std::vector<unsigned char> status_back;
-        // std::vector<float> errors_back;
-
-        // cv::calcOpticalFlowPyrLK(
-        //     rightRectImg,
-        //     leftRectImg,
-        //     right_points,
-        //     left_points_back,
-        //     status_back,
-        //     errors_back,
-        //     cv::Size(21, 21),
-        //     3,
-        //     cv::TermCriteria(
-        //         cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
-        //         30,
-        //         0.01
-        //     )
-        // );
-        // --- END VALIDATION BLOCK ---
-
-        for(std::size_t i = 0; i < left_points.size(); i++) {
-            if (!status[i]) {continue;}
-            tracked_count++;
-
-            // Extra validation
-            // const double fb_error = cv::norm(left_points[i] - left_points_back[i]);
-            // if (fb_error > 1.0) {continue;}
-            // End Extra validation
-
-            const cv::Point2f& pl = left_points[i];
-            const cv::Point2f& pr = right_points[i];
-
-            const double y_error = std::abs(pl.y - pr.y);
-            if (y_error > max_y_error_px) {continue;}
-            y_ok_count++;
-
-            const double disparity = static_cast<double>(pl.x - pr.x);
-            if (disparity < min_disparity_px || disparity > max_disparity_px) {continue;}
-            disparity_ok_count++;
-
-            if (errors[i] > max_lk_error) {continue;}
-            error_ok_count++;
-
-            const double depth = calib.fx * calib.baseline_m / disparity;
-            if (depth < min_depth_m || depth > max_depth_m) {continue;}
-            depth_ok_count++;
-
-            const double x = (static_cast<double>(pl.x) - calib.cx) * depth / calib.fx;
-            const double y = (static_cast<double>(pl.y) - calib.cy) * depth / calib.fy;
-            const double z = depth;
-            // Build the stereo feature
-            StereoFeature feat;
-            feat.id = next_feature_id++;
-            feat.px_left = pl;
-            feat.px_right = pr;
-            feat.disparity = disparity;
-            feat.depth_m = depth;
-            feat.point_left_cam = cv::Point3d(x, y, z);
-            stereo_features.push_back(feat);
-        }
-        return stereo_features;
     }
 
     void VIONode::processRectifiedStereo(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
@@ -291,25 +178,270 @@ namespace vio_node {
             return;
         }
 
-        std::vector<StereoFeature> features = matchStereoFeatures(leftRectImg, rightRectImg, stereoCalib);
-        RCLCPP_INFO_THROTTLE(
-            get_logger(),
-            *get_clock(),
-            1000,
-            "Stereo features: %zu",
-            features.size()
-        );
-        // For now just debug, next block: store as current frame, then track features across time
+        const int min_features = 300;
+        const int max_features = 500;
+        const int detect_every_n_frames = 5;
+
+        if(prev_left_rectified_.empty() || tracked_features_.empty()) {
+            tracked_features_.clear();
+
+            addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, max_features);
+        }
+        else {
+            // Always preserve and track existing features
+            trackExistingFeaturesTemporal(prev_left_rectified_, leftRectImg);
+            // Update stereo depth for surviving features
+            updateStereoDepthForTrackedFeatures(leftRectImg, rightRectImg, stereoCalib);
+            
+            const bool should_add_new = tracked_features_.size() < static_cast<std::size_t>(min_features) ||
+                                        frame_idx_ % detect_every_n_frames == 0;
+            if(should_add_new) {
+                const int num_to_add = std::max(std::size_t(0), (max_features - static_cast<std::size_t>(tracked_features_.size())));
+                if(num_to_add > 0) {
+                    addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, num_to_add);
+                }
+            }
+        }
+        // Debug publishing
+        std::vector<StereoFeature> features;
+        features.reserve(tracked_features_.size());
+        for(const auto& tracked_feature : tracked_features_) {
+            StereoFeature feature;
+            feature.id = tracked_feature.id;
+            feature.px_left = tracked_feature.px_left_curr;
+            feature.px_right = tracked_feature.px_right_curr;
+            feature.disparity = tracked_feature.disparity;
+            feature.depth_m = tracked_feature.depth_m;
+            feature.point_left_cam = tracked_feature.point_left_cam_curr;
+            features.push_back(feature);
+        }
+
         static std::size_t debug_frame_count = 0;
         debug_frame_count++;
-        if(publishDebugStereoFeatures_ && debugStereoFeaturePub_ && debug_frame_count % 10 == 0){
+        if(publishDebugStereoFeatures_ && debugStereoFeaturePub_ && debug_frame_count % 10 == 0){   // Throttle publishing
             cv::Mat debug_img = makeStereoDebugImage(leftRectImg, rightRectImg, features);
             auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", debug_img).toImageMsg();
             debug_msg->header.stamp = stamp;
             debug_msg->header.frame_id = "front_stereo_camera_left_optical";
             debugStereoFeaturePub_->publish(*debug_msg);
         }
+
+        prev_left_rectified_ = leftRectImg.clone();
+        frame_idx_++;
     }
+
+    void VIONode::trackExistingFeaturesTemporal(const cv::Mat& prev_left, const cv::Mat& curr_left)
+    {
+        // Track existing features frame to frame
+        std::vector<cv::Point2f> prev_points;
+        prev_points.reserve(tracked_features_.size());
+
+        for (const auto& f : tracked_features_) {prev_points.push_back(f.px_left_curr);}
+        if(prev_points.empty()) {return;}
+
+        std::vector<cv::Point2f> curr_points;
+        std::vector<unsigned char> status;
+        std::vector<float> errors;
+
+        cv::calcOpticalFlowPyrLK(
+            prev_left,
+            curr_left,
+            prev_points,
+            curr_points,
+            status,
+            errors,
+            cv::Size(21, 21),
+            3,
+            cv::TermCriteria(
+                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
+                30,
+                0.01
+            )
+        );
+        // Now filter
+        std::vector<TrackedFeature> surviving_features;
+        const float max_temporal_lk_error = 20.0f;
+
+        for(std::size_t i = 0; i < tracked_features_.size(); i++) {
+            if(!status[i]){continue;}
+            if(errors[i] > max_temporal_lk_error){continue;}
+
+            const auto& pt = curr_points[i];
+            if(pt.x < 0 || pt.x >= curr_left.cols ||
+               pt.y < 0 || pt.y >= curr_left.rows){continue;}
+            
+            TrackedFeature f = tracked_features_[i];
+            f.px_left_prev = f.px_left_curr;
+            f.px_left_curr = pt;
+            f.age++;
+
+            surviving_features.push_back(f);
+        }
+        tracked_features_ = std::move(surviving_features);
+    }
+
+    void VIONode::updateStereoDepthForTrackedFeatures(const cv::Mat& curr_left, const cv::Mat& curr_right,
+                                                      const StereoCalibration& calib)
+    {
+        // For each current-left feature, track into the current right image
+        std::vector<cv::Point2f> curr_left_points;
+        curr_left_points.reserve(tracked_features_.size());
+        for(const auto& f : tracked_features_) {curr_left_points.push_back(f.px_left_curr);}
+        if(curr_left_points.empty()) {return;}
+
+        std::vector<cv::Point2f> curr_right_points;
+        std::vector<unsigned char> stereo_status;
+        std::vector<float> stereo_errors;
+        cv::calcOpticalFlowPyrLK(
+            curr_left,
+            curr_right,
+            curr_left_points,
+            curr_right_points,
+            stereo_status,
+            stereo_errors,
+            cv::Size(21, 21),
+            3,
+            cv::TermCriteria(
+                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
+                30,
+                0.01
+            )
+        );
+        // Now update depth
+        std::vector<TrackedFeature> depth_valid_features;
+
+        const double max_y_error_px = 2.0;
+        const double min_depth_m = 0.25;
+        const double max_depth_m = 30.0;
+        const double min_disparity_px = calib.fx * calib.baseline_m / max_depth_m;
+        const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
+        const float max_stereo_lk_error = 20.0f;
+
+        for(std::size_t i = 0; i < tracked_features_.size(); i++) {
+            if(!stereo_status[i]){continue;}
+            
+            const cv::Point2f& pl = curr_left_points[i];
+            const cv::Point2f& pr = curr_right_points[i];
+            // Y error check
+            const double y_error = std::abs(pl.y - pr.y);
+            if(y_error > max_y_error_px){continue;}
+            // Disparity check
+            const double disparity = static_cast<double>(pl.x - pr.x);
+            if(disparity < min_disparity_px || disparity > max_disparity_px){continue;}
+            // Error check
+            if(stereo_errors[i] > max_stereo_lk_error){continue;}
+            // Calculate depth
+            const double depth = calib.fx * calib.baseline_m / disparity;
+            if(depth < min_depth_m || depth > max_depth_m){continue;}
+
+            TrackedFeature f = tracked_features_[i];
+            f.px_right_curr = pr;
+            f.disparity = disparity;
+            f.depth_m = depth;
+            // Calculate 3D coordinates
+            const double x = (static_cast<double>(pl.x) - calib.cx) * depth / calib.fx;
+            const double y = (static_cast<double>(pl.y) - calib.cy) * depth / calib.fy;
+            const double z = depth;
+            
+            f.point_left_cam_curr = cv::Point3d(x, y, z);
+            depth_valid_features.push_back(f);
+        }
+        tracked_features_ = std::move(depth_valid_features);
+    }
+
+    cv::Mat VIONode::buildFeatureDetectionMask(const cv::Size& image_size,
+                                               const std::vector<TrackedFeature>& existing_features) const
+    {
+        cv::Mat mask(image_size, CV_8UC1, cv::Scalar(255));
+        const int exclusion_radius_px = 15;
+        // Add mask to existing features to prevent double detection
+        for(const auto& f : existing_features) {
+            if(f.px_left_curr.x >= 0 && f.px_left_curr.x < image_size.width &&
+               f.px_left_curr.y >= 0 && f.px_left_curr.y < image_size.height) {
+                cv::circle(mask, f.px_left_curr, exclusion_radius_px, cv::Scalar(0), -1);
+            }
+        }
+        // Avoid features too close to image borders
+        const int border = 20;
+        mask.rowRange(0, border).setTo(0);  // Top
+        mask.rowRange(image_size.height - border, image_size.height).setTo(0);  // Bottom
+        mask.colRange(0, border).setTo(0);  // Left
+        mask.colRange(image_size.width - border, image_size.width).setTo(0);   // Right
+        return mask;
+    }
+
+    void VIONode::addNewTrackedFeatures(const cv::Mat& left, const cv::Mat& right,
+                                        const StereoCalibration& calib, int max_new_features)
+    {
+        if(max_new_features <= 0){return;}
+        // Get our mask
+        cv::Mat mask = buildFeatureDetectionMask(left.size(), tracked_features_);
+        // Detect new features with our mask
+        std::vector<cv::Point2f> new_left_points = detectLeftFeatures(left, mask, max_new_features);
+        if(new_left_points.empty()){return;}
+        // Match from left to right image using optical flow
+        std::vector<cv::Point2f> new_right_points;
+        std::vector<unsigned char> status;
+        std::vector<float> errors;
+        cv::calcOpticalFlowPyrLK(
+            left,
+            right,
+            new_left_points,
+            new_right_points,
+            status,
+            errors,
+            cv::Size(21, 21),
+            3,
+            cv::TermCriteria(
+                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
+                30,
+                0.01
+            )
+        );
+        // Now do filtering
+        const double max_y_error_px = 2.0;
+        const double min_depth_m = 0.25;
+        const double max_depth_m = 30.0;
+        const double min_disparity_px = calib.fx * calib.baseline_m / max_depth_m;
+        const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
+        const float max_stereo_lk_error = 20.0f;
+
+        for(std::size_t i = 0; i < new_left_points.size(); i++) {
+            // Bad status or errors exist
+            if(!status[i] || errors[i] > max_stereo_lk_error){continue;}
+
+            const cv::Point2f& pl = new_left_points[i];
+            const cv::Point2f& pr = new_right_points[i];
+            // y error check
+            const double y_error = std::abs(pl.y - pr.y);
+            if(y_error > max_y_error_px){continue;}
+            // disparity check
+            const double disparity = static_cast<double>(pl.x - pr.x);
+            if(disparity < min_disparity_px || disparity > max_disparity_px){continue;}
+            // depth sanity check
+            const double depth = calib.fx * calib.baseline_m / disparity;
+            if(depth < min_depth_m || depth > max_depth_m){continue;}
+            // Calc coordinates
+            const double x = (static_cast<double>(pl.x) - calib.cx) * depth / calib.fx;
+            const double y = (static_cast<double>(pl.y) - calib.cy) * depth / calib.fy;
+            const double z = depth;
+
+            TrackedFeature f;
+            f.id = next_feature_id_++;
+            f.px_left_prev = pl;
+            f.px_left_curr = pl;
+            f.px_right_curr = pr;
+            f.disparity = disparity;
+            f.depth_m = depth;
+            f.point_left_cam_prev = f.point_left_cam_curr;  // Preserve old point
+            f.point_left_cam_curr = cv::Point3d(x, y, z);
+            f.age = 1;
+
+            tracked_features_.push_back(f);
+        }
+    }
+
+
 
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                  const std::vector<StereoFeature>& features)

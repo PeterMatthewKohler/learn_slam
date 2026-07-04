@@ -83,8 +83,9 @@ namespace vio_node {
             currentLeftCamInfo_.emplace(*msg);
             initializeRectification(currentLeftCamInfo_.value(), leftRectMap_);
         }
-        else if(!stereoCalib_.initialized && 
-                currentLeftCamInfo_.has_value() && currentRightCamInfo_.has_value()){
+
+        if(!stereoCalib_.initialized &&
+           currentLeftCamInfo_.has_value() && currentRightCamInfo_.has_value()){
             initializeStereoCalibration(currentLeftCamInfo_.value(), currentRightCamInfo_.value(), stereoCalib_);
             RCLCPP_INFO(get_logger(),
                         "Stereo calib: fx=%.3f fy=%.3f cx=%.3f cy=%.3f baseline=%.4f m",
@@ -102,6 +103,18 @@ namespace vio_node {
         if(!currentRightCamInfo_.has_value()){
             currentRightCamInfo_.emplace(*msg);
             initializeRectification(currentRightCamInfo_.value(), rightRectMap_);
+        }
+
+        if(!stereoCalib_.initialized &&
+           currentLeftCamInfo_.has_value() && currentRightCamInfo_.has_value()){
+            initializeStereoCalibration(currentLeftCamInfo_.value(), currentRightCamInfo_.value(), stereoCalib_);
+            RCLCPP_INFO(get_logger(),
+                        "Stereo calib: fx=%.3f fy=%.3f cx=%.3f cy=%.3f baseline=%.4f m",
+                        stereoCalib_.fx,
+                        stereoCalib_.fy,
+                        stereoCalib_.cx,
+                        stereoCalib_.cy,
+                        stereoCalib_.baseline_m);
         }
     }
 
@@ -173,7 +186,6 @@ namespace vio_node {
         );
 
         processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
-
     }
 
     void VIONode::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg)
