@@ -258,14 +258,27 @@ namespace vio_node {
 
         this->declare_parameter("camera_imu_time_offset_sec", 0.0);
         cameraIMUTimeOffsetS_ = this->get_parameter("camera_imu_time_offset_sec").as_double();
+        if (!std::isfinite(cameraIMUTimeOffsetS_)) {throw std::invalid_argument("camera_imu_time_offset_sec must be finite");}
+
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     {
         // Reject incorrect frame IDs
         if(!validateFrameID(msg->header.frame_id, imuFrameID_, "IMU")){return;}
+        rclcpp::Time imu_stamp(msg->header.stamp);
         std::lock_guard<std::mutex> lock(dataMutex_);
-        currentImu_.emplace(*msg);
+        if(lastImuStamp_ && imu_stamp <= lastImuStamp_.value()) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "IMU message rejected, current timestamp older than latest accepted. Current=%.9f, Latest=%.9f",
+                imu_stamp.seconds(), lastImuStamp_.value().seconds());
+            return;
+        }
+        lastImuStamp_.emplace(imu_stamp);
+        currentImu_ = *msg;
     }
 
     void VIONode::leftCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
@@ -384,6 +397,27 @@ namespace vio_node {
                 tf_baseline, camera_baseline, tolerance);
             return;
         }
+        // Calculate midpoint of left & right images
+        const int64_t midpoint_ns =
+            left_stamp.nanoseconds() +
+            (right_stamp.nanoseconds() - left_stamp.nanoseconds()) / 2;
+        // Construct corrected timestamp
+        const rclcpp::Time camera_stamp(midpoint_ns, left_stamp.get_clock_type());
+        const rclcpp::Time visual_stamp = camera_stamp + rclcpp::Duration::from_seconds(cameraIMUTimeOffsetS_);
+        // Reject if our visual stamp is before last accepted visual stamp
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            if(lastVisualStamp_ && visual_stamp <= lastVisualStamp_.value()) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Corrected stereo timestamp rejected, not newer than latest accepted. Current=%.9f, Latest=%.9f",
+                    visual_stamp.seconds(), lastVisualStamp_.value().seconds());
+                return;
+            }
+            lastVisualStamp_.emplace(visual_stamp);
+        }
 
         processed_count++;
         // Rectify the stereo pair of images
@@ -413,7 +447,7 @@ namespace vio_node {
             rightRectMap_.map2,
             cv::INTER_LINEAR
         );
-        processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
+        processRectifiedStereo(left_rectified, right_rectified, visual_stamp);
 
     }
 

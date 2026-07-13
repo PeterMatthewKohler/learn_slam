@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <stdexcept>
 
 namespace vio_node {
         // Helper structs
@@ -166,8 +167,10 @@ namespace vio_node {
 
         // Internal states
         std::optional<sensor_msgs::msg::Imu> currentImu_;
+        std::optional<rclcpp::Time> lastImuStamp_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
+        std::optional<rclcpp::Time> lastVisualStamp_;
         RectificationData leftRectMap_;
         RectificationData rightRectMap_;
         StereoCalibration stereoCalib_;
