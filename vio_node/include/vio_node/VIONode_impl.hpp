@@ -53,15 +53,15 @@ namespace vio_node {
         struct TrackedFeature {
             int id = -1;
 
-            cv::Point2f px_left_prev;
-            cv::Point2f px_left_curr;
-            cv::Point2f px_right_curr;
+            cv::Point2f px_left_prev;           // pixel at t_(k-1)
+            cv::Point3d point_left_cam_prev;    // 3D point in the left camera at t_(k-1)
+
+            cv::Point2f px_left_curr;           // pixel at t_k
+            cv::Point2f px_right_curr;          // right-camera match at t_k
+            cv::Point3d point_left_cam_curr;    // 3D point in the left camera at t_k
 
             double disparity = 0.0;
             double depth_m = 0.0;
-
-            cv::Point3d point_left_cam_prev;
-            cv::Point3d point_left_cam_curr;
 
             int age = 0;
         };

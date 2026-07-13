@@ -175,7 +175,7 @@ TF publication remains disabled while the ground-truth TF tree owns `base_link`.
 6. Publish complete odometry, covariance, status, and optional TF output.
 7. Add unit, rosbag replay, accuracy, failure-recovery, and performance tests.
 
-### Current Point 1 Status
+### Point 1 Status: Complete
 
 Completed:
 
@@ -190,11 +190,35 @@ Completed:
 - Added strict frame-ID validation for IMU, image, and `CameraInfo` messages.
 - Gated stereo processing on complete rectification, stereo calibration, and
   extrinsic readiness.
-
-Remaining:
-
-- Validate transform values and compare the TF stereo baseline with the
-  projection-matrix baseline.
-- Construct the visual timestamp from the stereo midpoint and configured
+- Validated transform values and verified that the TF stereo baseline agrees
+  with the projection-matrix baseline.
+- Constructed each visual timestamp from the stereo midpoint and configured
   camera/IMU offset.
-- Reject duplicate or backward sensor timestamps.
+- Rejected duplicate or backward IMU and visual timestamps.
+
+### Current Point 2 Status
+
+Point 2 prepares stereo tracks for visual odometry. A surviving
+`TrackedFeature` represents the same scene point in two consecutive stereo
+frames:
+
+```text
+px_left_prev          left pixel at t_(k-1)
+point_left_cam_prev   3D point in the left camera at t_(k-1)
+px_left_curr          left pixel at t_k
+px_right_curr         right pixel at t_k
+point_left_cam_curr   3D point in the left camera at t_k
+```
+
+`age` is the number of consecutive frames in which the track has a valid
+stereo observation. A new track starts at `1`; a track that survives temporal
+tracking and current-frame stereo validation increments by one. Motion
+estimation must only use tracks with `age >= 2`.
+
+Planned work:
+
+1. Correct and document feature-observation state advancement.
+2. Add temporal forward-backward tracking validation.
+3. Add stereo left-right consistency validation.
+4. Improve spatial distribution, configurable thresholds, and diagnostics.
+5. Add focused tracker tests.

@@ -272,6 +272,7 @@ namespace vio_node {
             
             TrackedFeature f = tracked_features_[i];
             f.px_left_prev = f.px_left_curr;
+            f.point_left_cam_prev = f.point_left_cam_curr;
             f.px_left_curr = pt;
             f.age++;
 
@@ -433,8 +434,8 @@ namespace vio_node {
             f.px_right_curr = pr;
             f.disparity = disparity;
             f.depth_m = depth;
-            f.point_left_cam_prev = f.point_left_cam_curr;  // Preserve old point
             f.point_left_cam_curr = cv::Point3d(x, y, z);
+            f.point_left_cam_prev = f.point_left_cam_curr;  // Preserve old point
             f.age = 1;
 
             tracked_features_.push_back(f);
