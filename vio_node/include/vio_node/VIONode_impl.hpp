@@ -9,6 +9,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/quaternion.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -157,7 +158,12 @@ namespace vio_node {
         std::optional<geometry_msgs::msg::TransformStamped> imuFromRightCamera_; // T_I_CR
         std::optional<geometry_msgs::msg::TransformStamped> imuFromBody_; // T_I_B
         bool extrinsicsInitialized_ = false;
-        //rclcpp::TimerBase::SharedPtr timer_;
+        double tfStereoBaselineM_ = 0.0;
+        bool validateTransform(const geometry_msgs::msg::TransformStamped& transform,
+                               const std::string& expected_target,
+                               const std::string& expected_source);
+        bool validateStereoTransform(const geometry_msgs::msg::TransformStamped& left_from_right);
+
         // Internal states
         std::optional<sensor_msgs::msg::Imu> currentImu_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;

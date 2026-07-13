@@ -69,18 +69,29 @@ namespace vio_node {
                 imuFrameID_, rightCameraFrameID_, tf2::TimePointZero);
             auto imu_from_body = tf_buffer_->lookupTransform(
                 imuFrameID_, bodyFrameID_, tf2::TimePointZero);
-
+            auto left_from_right = tf_buffer_->lookupTransform(
+                leftCameraFrameID_, rightCameraFrameID_, tf2::TimePointZero);
+            // Validate transforms
+            const bool transforms_valid =
+                validateTransform(imu_from_left, imuFrameID_, leftCameraFrameID_) &&
+                validateTransform(imu_from_right, imuFrameID_, rightCameraFrameID_) &&
+                validateTransform(imu_from_body, imuFrameID_, bodyFrameID_) &&
+                validateTransform(left_from_right, leftCameraFrameID_, rightCameraFrameID_) &&
+                validateStereoTransform(left_from_right);
+            if(!transforms_valid){return;}
             {
                 std::lock_guard<std::mutex> lock(dataMutex_);
                 imuFromLeftCamera_ = std::move(imu_from_left);
                 imuFromRightCamera_ = std::move(imu_from_right);
                 imuFromBody_ = std::move(imu_from_body);
+                tfStereoBaselineM_ = left_from_right.transform.translation.x;
                 extrinsicsInitialized_ = true;
             }
 
-            extrinsicsInitTimer_->cancel();
+            extrinsicsInitTimer_->cancel(); // Only need this once
             RCLCPP_INFO(get_logger(), "Cached VIO sensor extrinsics");
-        } catch (const tf2::TransformException& ex) {
+        }
+        catch (const tf2::TransformException& ex) {
             RCLCPP_WARN_THROTTLE(
                 get_logger(), *get_clock(), 5000,
                 "Waiting For VIO Sensor Extrinsics: %s", ex.what());
@@ -99,6 +110,108 @@ namespace vio_node {
                 sensor_name.c_str(), actual.c_str(), expected.c_str());
             return false;
         }
+        return true;
+    }
+
+    bool VIONode::validateTransform(const geometry_msgs::msg::TransformStamped& transform,
+                                    const std::string& expected_target,
+                                    const std::string& expected_source)
+    {
+        // Validate Frame IDs
+        if(transform.child_frame_id != expected_source) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Mismatch between actual source frame(%s) and expected source frame(%s)",
+                transform.child_frame_id.c_str(), expected_source.c_str());
+                return false;
+        }
+        if(transform.header.frame_id != expected_target) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Mismatch between actual target frame(%s) and expected target frame(%s)",
+                transform.header.frame_id.c_str(), expected_target.c_str());
+                return false;
+        }
+        const auto& translation = transform.transform.translation;
+        const auto& rotation = transform.transform.rotation;
+
+        // Check every translation and quaternion component.
+        const bool components_are_finite =
+            std::isfinite(translation.x) &&
+            std::isfinite(translation.y) &&
+            std::isfinite(translation.z) &&
+            std::isfinite(rotation.x) &&
+            std::isfinite(rotation.y) &&
+            std::isfinite(rotation.z) &&
+            std::isfinite(rotation.w);
+
+        if (!components_are_finite) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Transform components from parent '%s' to child '%s' are not finite",
+                transform.header.frame_id.c_str(), transform.child_frame_id.c_str());
+            return false;
+        }
+        // Check quaternion norm within tolerance value of 1.0
+        double quat_norm_tolerance = 1e-3;
+        const double quaternion_norm = std::sqrt(
+            rotation.x * rotation.x +
+            rotation.y * rotation.y +
+            rotation.z * rotation.z +
+            rotation.w * rotation.w);
+        bool quatTolGood = std::abs(quaternion_norm - 1.0) <= quat_norm_tolerance;
+        if(!quatTolGood) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Quaternion norm outside of tolerance range.");
+        }
+        return quatTolGood;
+    }
+
+    bool VIONode::validateStereoTransform(const geometry_msgs::msg::TransformStamped& left_from_right)
+    {
+        // Validate translation and rotation
+        auto translation = left_from_right.transform.translation;
+        auto rotation = left_from_right.transform.rotation;
+        constexpr double tolerance = 1e-3;
+        // Check rotation is approx. identity
+        auto checkIdentity = [] (geometry_msgs::msg::Quaternion q,
+                                 double tolerance) {
+            const double norm = std::sqrt(
+                q.x * q.x +
+                q.y * q.y +
+                q.z * q.z +
+                q.w * q.w);
+            if (!std::isfinite(norm) || norm < tolerance) {return false;}
+            // q and -q represent the same rotation.
+            const double normalized_abs_w =
+                std::clamp(std::abs(q.w) / norm, 0.0, 1.0);
+            const double rotation_angle =
+                2.0 * std::acos(normalized_abs_w);
+
+            return rotation_angle <= tolerance;
+        };
+        if(translation.x <= 0 ||
+           std::abs(translation.y) > tolerance ||
+           std::abs(translation.z) > tolerance ||
+           !checkIdentity(rotation, tolerance)) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Translation failed sanity check and/or quaternion norm outside of tolerance range for transform from parent '%s' to child '%s'.",
+                left_from_right.header.frame_id.c_str(), left_from_right.child_frame_id.c_str());
+            return false;
+        }
+
         return true;
     }
 
@@ -235,12 +348,15 @@ namespace vio_node {
         }
         // Check readiness
         bool ready;
+        double tf_baseline, camera_baseline;
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             ready = extrinsicsInitialized_ &&
                     leftRectMap_.initialized &&
                     rightRectMap_.initialized &&
                     stereoCalib_.initialized;
+            tf_baseline = tfStereoBaselineM_;
+            camera_baseline = stereoCalib_.baseline_m;
         }
         if(!ready){
             RCLCPP_WARN_THROTTLE(
@@ -250,6 +366,25 @@ namespace vio_node {
                 "Waiting for VIO calibration and extrinsics");
             return;
         }
+        // Validate baselines and use result
+        const bool baselines_valid = std::isfinite(tf_baseline) &&
+                                     std::isfinite(camera_baseline) &&
+                                     tf_baseline > 0.0 &&
+                                     camera_baseline > 0.0;
+
+        const double tolerance = std::max(0.001, 0.01 * tf_baseline);
+
+        if (!baselines_valid ||
+            std::abs(tf_baseline - camera_baseline) > tolerance) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "TF Baseline(%.3f) and Camera Baseline(%.3f) difference outside of tolerance(%.3f) value",
+                tf_baseline, camera_baseline, tolerance);
+            return;
+        }
+
         processed_count++;
         // Rectify the stereo pair of images
         cv_bridge::CvImageConstPtr left_cv;
