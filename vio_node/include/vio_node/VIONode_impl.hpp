@@ -8,6 +8,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -29,8 +30,7 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-
+#include <chrono>
 
 namespace vio_node {
         // Helper structs
@@ -116,9 +116,6 @@ namespace vio_node {
         std::shared_ptr<message_filters::Synchronizer<StereoSyncPolicy>> sync_;
         void stereoCallback(const sensor_msgs::msg::Image::ConstSharedPtr& left_msg,
                             const sensor_msgs::msg::Image::ConstSharedPtr& right_msg);
-        // Odometry (for initial snapshotting)
-        rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSub_;
-        void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg);
 
         void initializeRectification(const sensor_msgs::msg::CameraInfo& info,
                                      RectificationData& rect);
@@ -136,9 +133,6 @@ namespace vio_node {
         std::vector<cv::Point2f> detectLeftFeatures(const cv::Mat& leftRectMap,
                                                     const cv::Mat& mask,
                                                     int max_corners);
-        std::vector<StereoFeature> matchStereoFeatures(const cv::Mat& leftRectImg,
-                                                       const cv::Mat& rightRectImg,
-                                                       const StereoCalibration& calib);
         void processRectifiedStereo(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                     const rclcpp::Time& stamp);
         void trackExistingFeaturesTemporal(const cv::Mat& prev_left, const cv::Mat& curr_left);
@@ -154,6 +148,13 @@ namespace vio_node {
         // TF2
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+        void initTF();
+        void tryInitializeExtrinsics();
+        rclcpp::TimerBase::SharedPtr extrinsicsInitTimer_;
+        std::optional<geometry_msgs::msg::TransformStamped> imuFromLeftCamera_; // T_I_CL
+        std::optional<geometry_msgs::msg::TransformStamped> imuFromRightCamera_; // T_I_CR
+        std::optional<geometry_msgs::msg::TransformStamped> imuFromBody_; // T_I_B
+        bool extrinsicsInitialized_ = false;
         //rclcpp::TimerBase::SharedPtr timer_;
         // Internal states
         std::optional<sensor_msgs::msg::Imu> currentImu_;
@@ -162,7 +163,6 @@ namespace vio_node {
         RectificationData leftRectMap_;
         RectificationData rightRectMap_;
         StereoCalibration stereoCalib_;
-        std::optional<nav_msgs::msg::Odometry> initVehOdom_;
         std::optional<nav_msgs::msg::Odometry> currentVIOOdom_;
         // Stereo tracking
         cv::Mat prev_left_rectified_;
@@ -178,9 +178,16 @@ namespace vio_node {
         std::string leftCameraInfoSubTopicName_;
         std::string rightImgSubTopicName_;
         std::string rightCameraInfoSubTopicName_;
-        std::string odomSubTopicName_;
         std::string vioPubTopicName_;
         bool publishDebugStereoFeatures_;
+        std::string worldFrameID_;
+        std::string bodyFrameID_;
+        std::string imuFrameID_;
+        std::string leftCameraFrameID_;
+        std::string rightCameraFrameID_;
+        bool publishTF_;
+        double cameraIMUTimeOffsetS_;
+
     };
 
 }   // namespace vio_node

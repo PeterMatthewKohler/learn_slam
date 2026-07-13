@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -39,6 +40,7 @@ ament_target_dependencies(VIONode_lib
     rclcpp_components
     nav_msgs
     sensor_msgs
+    geometry_msgs
     message_filters
     tf2
     tf2_ros

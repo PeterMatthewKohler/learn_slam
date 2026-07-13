@@ -5,6 +5,12 @@ vio_node:
     left_camera_info_sub_topic_name: "/front_stereo_camera/left/camera_info"
     right_img_sub_topic_name: "/front_stereo_camera/right/image_raw"
     right_camera_info_sub_topic_name: "/front_stereo_camera/right/camera_info"
-    odom_sub_topic_name: "/chassis/odom"
     vio_pub_topic_name: "/vio/odom"
     publish_debug_stereo_features: true
+    world_frame_id: "vio_odom"
+    body_frame_id: "base_link"
+    imu_frame_id: "chassis_imu"
+    left_camera_frame_id: "front_stereo_camera_left_rgb"
+    right_camera_frame_id: "front_stereo_camera_right_rgb"
+    publish_tf: false
+    camera_imu_time_offset_sec: 0.0

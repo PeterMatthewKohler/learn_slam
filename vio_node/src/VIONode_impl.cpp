@@ -1,11 +1,13 @@
 #include <vio_node/VIONode_impl.hpp>
+#include <utility>
 
 namespace vio_node {
     VIONode::VIONode(const rclcpp::NodeOptions& options) : Node("vio_node", options)
     {
         // Initialize parameters
         initParameters();
-
+        // Init TF
+        initTF();
         // Initialize publishers and subscribers
         initPubSubs();
     }
@@ -38,9 +40,51 @@ namespace vio_node {
             leftCameraInfoSubTopicName_, 10, std::bind(&VIONode::leftCameraInfoCallback, this, std::placeholders::_1));
         rightCameraInfoSub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             rightCameraInfoSubTopicName_, 10, std::bind(&VIONode::rightCameraInfoCallback, this, std::placeholders::_1));
-        // Initial position odometry subscriber
-        odomSub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            odomSubTopicName_, 10, std::bind(&VIONode::odomCallback, this, std::placeholders::_1));
+    }
+
+    void VIONode::initTF()
+    {
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(
+            *tf_buffer_,
+            this,
+            false   // Node's executor services /tf and /tf_static, doesn't need its own thread
+        );
+
+        extrinsicsInitTimer_ = create_wall_timer(
+            std::chrono::milliseconds(500),
+            std::bind(&VIONode::tryInitializeExtrinsics, this)
+        );
+    }
+
+    void VIONode::tryInitializeExtrinsics()
+    {
+        if(extrinsicsInitialized_){return;}
+
+        try {
+            auto imu_from_left = tf_buffer_->lookupTransform(
+                imuFrameID_, leftCameraFrameID_, tf2::TimePointZero);
+            auto imu_from_right = tf_buffer_->lookupTransform(
+                imuFrameID_, rightCameraFrameID_, tf2::TimePointZero);
+            auto imu_from_body = tf_buffer_->lookupTransform(
+                imuFrameID_, bodyFrameID_, tf2::TimePointZero);
+
+            {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                imuFromLeftCamera_ = std::move(imu_from_left);
+                imuFromRightCamera_ = std::move(imu_from_right);
+                imuFromBody_ = std::move(imu_from_body);
+                extrinsicsInitialized_ = true;
+            }
+
+            extrinsicsInitTimer_->cancel();
+            RCLCPP_INFO(get_logger(), "Cached VIO sensor extrinsics");
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "Waiting For VIO Sensor Extrinsics: %s", ex.what());
+        }
     }
 
     void VIONode::initParameters()
@@ -60,14 +104,32 @@ namespace vio_node {
         this->declare_parameter("right_camera_info_sub_topic_name", "/front_stereo_camera/right/camera_info");
         rightCameraInfoSubTopicName_ = this->get_parameter("right_camera_info_sub_topic_name").as_string();
 
-        this->declare_parameter("odom_sub_topic_name", "/chassis/odom");
-        odomSubTopicName_ = this->get_parameter("odom_sub_topic_name").as_string();
-
         this->declare_parameter("vio_pub_topic_name", "/vio/odom");
         vioPubTopicName_ = this->get_parameter("vio_pub_topic_name").as_string();
 
         this->declare_parameter("publish_debug_stereo_features", false);
         publishDebugStereoFeatures_ = this->get_parameter("publish_debug_stereo_features").as_bool();
+
+        this->declare_parameter("world_frame_id", "vio_odom");
+        worldFrameID_ = this->get_parameter("world_frame_id").as_string();
+
+        this->declare_parameter("body_frame_id", "base_link");
+        bodyFrameID_ = this->get_parameter("body_frame_id").as_string();
+
+        this->declare_parameter("imu_frame_id", "chassis_imu");
+        imuFrameID_ = this->get_parameter("imu_frame_id").as_string();
+
+        this->declare_parameter("left_camera_frame_id", "front_stereo_camera_left_rgb");
+        leftCameraFrameID_ = this->get_parameter("left_camera_frame_id").as_string();
+
+        this->declare_parameter("right_camera_frame_id", "front_stereo_camera_right_rgb");
+        rightCameraFrameID_ = this->get_parameter("right_camera_frame_id").as_string();
+
+        this->declare_parameter("publish_tf", false);
+        publishTF_ = this->get_parameter("publish_tf").as_bool();
+
+        this->declare_parameter("camera_imu_time_offset_sec", 0.0);
+        cameraIMUTimeOffsetS_ = this->get_parameter("camera_imu_time_offset_sec").as_double();
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
@@ -186,14 +248,6 @@ namespace vio_node {
         );
 
         processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
-    }
-
-    void VIONode::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg)
-    {   // Single snapshot at boot up
-        if(!initVehOdom_.has_value()){
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            initVehOdom_.emplace(*msg);
-        }
     }
 
 }   // namespace vio_node
