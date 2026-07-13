@@ -87,6 +87,21 @@ namespace vio_node {
         }
     }
 
+    bool VIONode::validateFrameID(const std::string& actual, const std::string& expected,
+                                  const std::string& sensor_name)
+    {
+        if(actual != expected){
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "Mismatch between %s sensor: actual name(%s) and expected name(%s)",
+                sensor_name.c_str(), actual.c_str(), expected.c_str());
+            return false;
+        }
+        return true;
+    }
+
     void VIONode::initParameters()
     {
         this->declare_parameter("imu_sub_topic_name", "/chassis/imu");
@@ -134,12 +149,17 @@ namespace vio_node {
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     {
+        // Reject incorrect frame IDs
+        if(!validateFrameID(msg->header.frame_id, imuFrameID_, "IMU")){return;}
         std::lock_guard<std::mutex> lock(dataMutex_);
         currentImu_.emplace(*msg);
     }
 
     void VIONode::leftCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
-    {   // These should never change/deviate at runtime
+    {
+        // Validate frame ID
+        if(!validateFrameID(msg->header.frame_id, leftCameraFrameID_, "LeftCamInfo")){return;}
+        // These should never change/deviate at runtime
         std::lock_guard<std::mutex> lock(dataMutex_);
         if(!currentLeftCamInfo_.has_value()){
             currentLeftCamInfo_.emplace(*msg);
@@ -160,7 +180,10 @@ namespace vio_node {
     }
 
     void VIONode::rightCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
-    {   // These should never change/deviate at runtime
+    {
+        // Validate frame ID
+        if(!validateFrameID(msg->header.frame_id, rightCameraFrameID_, "RightCamInfo")){return;}
+        // These should never change/deviate at runtime
         std::lock_guard<std::mutex> lock(dataMutex_);
         if(!currentRightCamInfo_.has_value()){
             currentRightCamInfo_.emplace(*msg);
@@ -183,15 +206,9 @@ namespace vio_node {
     void VIONode::stereoCallback(const sensor_msgs::msg::Image::ConstSharedPtr& left_msg,
                                  const sensor_msgs::msg::Image::ConstSharedPtr& right_msg)
     {
-        if (!leftRectMap_.initialized || !rightRectMap_.initialized) {
-            RCLCPP_WARN_THROTTLE(
-                get_logger(),
-                *get_clock(),
-                5000,
-                "Waiting for rectification maps..."
-            );
-            return;
-        }
+        // Validate frame IDs
+        if(!validateFrameID(left_msg->header.frame_id, leftCameraFrameID_, "LeftCam") ||
+           !validateFrameID(right_msg->header.frame_id, rightCameraFrameID_, "RightCam")){return;}
         // DEBUG SLOW RUNRATE
         static size_t callback_count = 0;
         static size_t rejected_dt_count = 0;
@@ -216,6 +233,23 @@ namespace vio_node {
             );
             return;
         }
+        // Check readiness
+        bool ready;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            ready = extrinsicsInitialized_ &&
+                    leftRectMap_.initialized &&
+                    rightRectMap_.initialized &&
+                    stereoCalib_.initialized;
+        }
+        if(!ready){
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Waiting for VIO calibration and extrinsics");
+            return;
+        }
         processed_count++;
         // Rectify the stereo pair of images
         cv_bridge::CvImageConstPtr left_cv;
@@ -230,7 +264,6 @@ namespace vio_node {
 
         cv::Mat left_rectified;
         cv::Mat right_rectified;
-
         cv::remap(
             left_cv->image,
             left_rectified,
@@ -238,7 +271,6 @@ namespace vio_node {
             leftRectMap_.map2,
             cv::INTER_LINEAR
         );
-
         cv::remap(
             right_cv->image,
             right_rectified,
@@ -246,8 +278,8 @@ namespace vio_node {
             rightRectMap_.map2,
             cv::INTER_LINEAR
         );
-
         processRectifiedStereo(left_rectified, right_rectified, left_msg->header.stamp);
+
     }
 
 }   // namespace vio_node

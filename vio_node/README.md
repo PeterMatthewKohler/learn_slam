@@ -64,11 +64,11 @@ The fixed transforms required by the estimator are:
 These transforms should be retrieved after TF becomes available and then cached,
 because the sensor mounting geometry does not change at runtime.
 
-### Camera Frame Caveat
+### Camera Frame Validation
 
-The camera `CameraInfo` messages currently report incorrect frame IDs. The
-configured `_rgb` frames are the intended runtime frames, but their axes still
-need to be verified against the optical convention used by the projection model:
+The image and `CameraInfo` messages use the configured `_rgb` frame IDs. Runtime
+TF measurements confirm that these frames follow the optical convention used by
+the camera projection model:
 
 ```text
 +x right
@@ -76,10 +76,21 @@ need to be verified against the optical convention used by the projection model:
 +z forward
 ```
 
-If an `_rgb` frame uses body-style axes, an additional RGB-to-optical rotation is
-required. If `CameraInfo.r` is not identity, its rectification rotation must also
-be included when relating rectified feature coordinates to the physical camera
-extrinsic.
+For the front-facing cameras, camera `+z` maps to body `+x`, camera `+x` maps to
+body `-y`, and camera `+y` maps to body `-z`. The measured transform from the
+right camera into the left camera is:
+
+```text
+translation = [0.150, 0.000, 0.000] m
+rotation    = identity
+```
+
+Both `CameraInfo.r` matrices are identity, so the rectified feature coordinates
+and physical `_rgb` optical frames have the same orientation. No additional
+RGB-to-optical or rectification rotation is currently required.
+
+The node treats frame IDs as part of the sensor contract. IMU, image, and
+`CameraInfo` messages with unexpected frame IDs are rejected.
 
 ## Estimator State
 
@@ -172,11 +183,18 @@ Completed:
 - Established `vio_odom` as an independent VIO world.
 - Removed ground-truth odometry from the estimator input path.
 - Added explicit TF ownership and camera/IMU time-offset parameters.
+- Initialized the TF2 buffer and listener.
+- Retrieved and cached `T_I_CL`, `T_I_CR`, and `T_I_B`.
+- Verified the camera optical axes, identity rectification, and horizontal
+  `0.150 m` stereo geometry.
+- Added strict frame-ID validation for IMU, image, and `CameraInfo` messages.
+- Gated stereo processing on complete rectification, stereo calibration, and
+  extrinsic readiness.
 
 Remaining:
 
-- Verify that the `_rgb` camera frames use the expected optical axes.
-- Initialize the TF2 buffer and listener.
-- Retrieve, validate, and cache `T_I_CL`, `T_I_CR`, and `T_I_B`.
-- Gate visual processing until calibration and extrinsics are ready.
-- Validate incoming sensor frame IDs and timestamps against this contract.
+- Validate transform values and compare the TF stereo baseline with the
+  projection-matrix baseline.
+- Construct the visual timestamp from the stereo midpoint and configured
+  camera/IMU offset.
+- Reject duplicate or backward sensor timestamps.

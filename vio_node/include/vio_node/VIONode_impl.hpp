@@ -150,6 +150,8 @@ namespace vio_node {
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
         void initTF();
         void tryInitializeExtrinsics();
+        bool validateFrameID(const std::string& actual, const std::string& expected,
+                             const std::string& sensor_name);
         rclcpp::TimerBase::SharedPtr extrinsicsInitTimer_;
         std::optional<geometry_msgs::msg::TransformStamped> imuFromLeftCamera_; // T_I_CL
         std::optional<geometry_msgs::msg::TransformStamped> imuFromRightCamera_; // T_I_CR
@@ -187,7 +189,6 @@ namespace vio_node {
         std::string rightCameraFrameID_;
         bool publishTF_;
         double cameraIMUTimeOffsetS_;
-
     };
 
 }   // namespace vio_node

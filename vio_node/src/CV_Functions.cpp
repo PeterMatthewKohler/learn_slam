@@ -222,7 +222,7 @@ namespace vio_node {
             cv::Mat debug_img = makeStereoDebugImage(leftRectImg, rightRectImg, features);
             auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", debug_img).toImageMsg();
             debug_msg->header.stamp = stamp;
-            debug_msg->header.frame_id = "front_stereo_camera_left_optical";
+            debug_msg->header.frame_id = leftCameraFrameID_;
             debugStereoFeaturePub_->publish(*debug_msg);
         }
 
