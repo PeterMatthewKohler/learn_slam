@@ -28,6 +28,7 @@ set(VIONode_SRC
 
 set(VIONode_HEADERS
     include/vio_node/VIONode_impl.hpp
+    include/vio_node/CV_structs.hpp
 )
 
 ament_auto_add_library(VIONode_lib

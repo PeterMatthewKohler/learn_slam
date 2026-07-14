@@ -22,6 +22,7 @@
 // OpenCV
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include "vio_node/CV_structs.hpp"
 // #include <opencv2/imgproc.hpp>
 // #include <opencv2/highgui.hpp>
 // #include <opencv2/imgcodecs.hpp>
@@ -35,77 +36,6 @@
 #include <stdexcept>
 
 namespace vio_node {
-        // Helper structs
-        // Stereo Tracking
-        struct StereoFeature {
-            int id = -1;
-
-            cv::Point2f px_left;
-            cv::Point2f px_right;
-
-            double disparity = 0.0;
-            double depth_m = 0.0;
-
-            // 3D point in rectified left frame
-            cv::Point3d point_left_cam;
-        };
-
-        struct StereoMatch {
-            std::size_t input_index;
-
-            cv::Point2f px_right;
-            cv::Point3d point_left_cam;
-
-            double disparity;
-            double depth_m;
-        };
-
-        struct TrackedFeature {
-            int id = -1;
-
-            cv::Point2f px_left_prev;           // pixel at t_(k-1)
-            cv::Point3d point_left_cam_prev;    // 3D point in the left camera at t_(k-1)
-
-            cv::Point2f px_left_curr;           // pixel at t_k
-            cv::Point2f px_right_curr;          // right-camera match at t_k
-            cv::Point3d point_left_cam_curr;    // 3D point in the left camera at t_k
-
-            double disparity = 0.0;
-            double depth_m = 0.0;
-
-            int age = 0;
-        };
-
-        struct StereoCalibration {
-            double fx = 0.0;
-            double fy = 0.0;
-            double cx = 0.0;
-            double cy = 0.0;
-            double baseline_m = 0.0;
-
-            bool initialized = false;
-        };
-
-        struct RectificationData {
-            cv::Mat K;
-            cv::Mat D;
-            cv::Mat R;
-            cv::Mat P_rect_3x3;
-
-            cv::Mat map1;
-            cv::Mat map2;
-
-            bool initialized = false;
-        };
-
-        struct VisualCorrespondence {
-            int id = -1;
-            int age = 0;
-
-            cv::Point3d point_prev;
-            cv::Point2f pixel_curr;
-            cv::Point3d point_curr;
-        };
 
     class VIONode : public rclcpp::Node
     {
@@ -170,6 +100,10 @@ namespace vio_node {
             int grid_rows,
             int grid_cols,
             std::size_t max_correspondences) const;
+        std::optional<VisualPoseEstimate> estimateRelativeVisualPose(
+            const std::vector<VisualCorrespondence>& correspondences,
+            const StereoCalibration& calib) const;
+
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
         // TF2

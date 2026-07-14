@@ -540,6 +540,81 @@ namespace vio_node {
         return output;
     }
 
+    std::optional<VisualPoseEstimate> VIONode::estimateRelativeVisualPose(
+        const std::vector<VisualCorrespondence>& correspondences,
+        const StereoCalibration& calib) const
+    {
+        // Validate calibration w/ positive fx and fy
+        if(!calib.initialized ||
+           !std::isfinite(calib.cx) || !std::isfinite(calib.cy) ||
+           !std::isfinite(calib.fx) || !std::isfinite(calib.fy) ||
+           calib.fx <= 0.0 || calib.fy <= 0.0){return std::nullopt;}
+        // Require atleast 6 correspondences
+        const std::size_t min_size_threshold = 6;
+        if(correspondences.size() < min_size_threshold){return std::nullopt;}
+        // Build object points and image points
+        std::vector<cv::Point3d> obj_points;
+        std::vector<cv::Point2f> img_points;
+        for(const auto& c : correspondences){
+            obj_points.push_back(c.point_prev);
+            img_points.push_back(c.pixel_curr);
+        }
+        // Construct rectified camera matrix from fx, fy, cx, cy
+        cv::Mat K_rect = (cv::Mat_<double>(3, 3) <<
+            calib.fx,   0.0,        calib.cx,
+            0.0,        calib.fy,   calib.cy,
+            0.0,        0.0,        1.0
+        );
+        cv::Vec3d rvec;
+        cv::Vec3d tvec;
+        cv::Matx33d rotMat;
+        std::vector<int> inliers;
+
+        auto isFiniteVec3 = [](const cv::Vec3d& value) {
+            return std::isfinite(value[0]) &&
+                    std::isfinite(value[1]) &&
+                    std::isfinite(value[2]);
+        };
+
+        try {
+            bool success = cv::solvePnPRansac(
+                                obj_points,             // Object points
+                                img_points,             // Image points
+                                K_rect,                 // Camera Matrix
+                                cv::Mat(),              // Distortion coeffs, empty since image is rectified
+                                rvec,                   // rvec
+                                tvec,                   // tvec
+                                false,                  // useExtrinsicGuess
+                                100,                    // iterationCount
+                                2.0f,                   // reprojectionError
+                                0.99,                   // confidence
+                                inliers,                // inliers
+                                cv::SOLVEPNP_ITERATIVE);// flags
+            if(!success || inliers.size() < min_size_threshold){return std::nullopt;}
+            if (!isFiniteVec3(rvec) || !isFiniteVec3(tvec)) {return std::nullopt;}
+            // Convert rvec to rotation matrix
+            cv::Rodrigues(rvec, rotMat);
+            // Check for non-finite values
+            for (double value : rotMat.val) {
+                if (!std::isfinite(value)) {
+                    return std::nullopt;
+                }
+            }
+        } catch (const cv::Exception& e) {
+            RCLCPP_ERROR_STREAM(
+                this->get_logger(),
+                "estimateRelativeVisualPose openCV error: " << e.what());
+            return std::nullopt;
+        }
+
+
+        VisualPoseEstimate v;
+        v.rotation_curr_from_prev = rotMat;
+        v.translation_curr_from_prev = tvec;
+        v.inlier_indices = inliers;
+        return v;
+    }
+
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                  const std::vector<StereoFeature>& features)
     {
