@@ -20,15 +20,15 @@ namespace vio_node {
         if(publishDebugStereoFeatures_){debugStereoFeaturePub_ = 
                                             this->create_publisher<sensor_msgs::msg::Image>("debug/StereoFeatures", 10);}
         // Subscribers
-        auto sensorQOS = rclcpp::SensorDataQoS();
+        auto imageQOS = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
         imuSub_ = this->create_subscription<sensor_msgs::msg::Imu>(
             imuSubTopicName_, 10, std::bind(&VIONode::imuCallback, this, std::placeholders::_1));
         // Synchronize stereo camera image subscribers
         leftImgSub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
-            this, leftImgSubTopicName_, sensorQOS.get_rmw_qos_profile()
+            this, leftImgSubTopicName_, imageQOS.get_rmw_qos_profile()
         );
         rightImgSub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
-            this, rightImgSubTopicName_, sensorQOS.get_rmw_qos_profile()
+            this, rightImgSubTopicName_, imageQOS.get_rmw_qos_profile()
         );
         sync_ = std::make_shared<message_filters::Synchronizer<StereoSyncPolicy>>(
             StereoSyncPolicy(10), *leftImgSub_, *rightImgSub_
@@ -335,27 +335,18 @@ namespace vio_node {
         // Validate frame IDs
         if(!validateFrameID(left_msg->header.frame_id, leftCameraFrameID_, "LeftCam") ||
            !validateFrameID(right_msg->header.frame_id, rightCameraFrameID_, "RightCam")){return;}
-        // DEBUG SLOW RUNRATE
-        static size_t callback_count = 0;
-        static size_t rejected_dt_count = 0;
-        static size_t processed_count = 0;
-        callback_count++;
 
         // Simple check to ensure synchronization
         const auto left_stamp = rclcpp::Time(left_msg->header.stamp);
         const auto right_stamp = rclcpp::Time(right_msg->header.stamp);
         const double stereo_dt = std::abs((left_stamp - right_stamp).seconds());
         if (stereo_dt > 0.010) {
-            rejected_dt_count++;
             RCLCPP_INFO_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 1000,
-                "Rejecting stereo pair: dt=%.6f, callbacks=%zu rejected_dt=%zu processed=%zu",
-                stereo_dt,
-                callback_count,
-                rejected_dt_count,
-                processed_count
+                "Rejecting stereo pair: dt=%.6f s exceeds 0.010 s",
+                stereo_dt
             );
             return;
         }
@@ -419,7 +410,6 @@ namespace vio_node {
             lastVisualStamp_.emplace(visual_stamp);
         }
 
-        processed_count++;
         // Rectify the stereo pair of images
         cv_bridge::CvImageConstPtr left_cv;
         cv_bridge::CvImageConstPtr right_cv;

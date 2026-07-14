@@ -215,10 +215,30 @@ stereo observation. A new track starts at `1`; a track that survives temporal
 tracking and current-frame stereo validation increments by one. Motion
 estimation must only use tracks with `age >= 2`.
 
-Planned work:
+Completed:
 
 1. Correct and document feature-observation state advancement.
 2. Add temporal forward-backward tracking validation.
 3. Add stereo left-right consistency validation.
-4. Improve spatial distribution, configurable thresholds, and diagnostics.
-5. Add focused tracker tests.
+4. Benchmark per-stage tracker timing and feature survival.
+5. Match the image-subscription QoS to Isaac Sim and verify an approximately
+   `22 Hz` synchronized stereo rate.
+
+The initial simulator baseline maintained approximately `476-478` tracks. The
+tracker averaged `14-16 ms` per frame: temporal tracking and existing-feature
+stereo matching each required about `3-4 ms`, while replenishment required
+about `30-40 ms` once every five frames. Tracker processing therefore does not
+limit the current visual update rate.
+
+Reliable header-stamp sampling verified that both Isaac Sim cameras publish
+at the same `60 Hz` simulation cadence with identical timestamps. The low
+accepted-pair rate was instead traced to the VIO image subscriptions requesting
+best-effort sensor QoS while Isaac Sim offered reliable, depth-10 delivery.
+
+Remaining:
+
+1. Improve feature spatial distribution and processing performance based on
+   those measurements.
+2. Move tracker thresholds and feature-count targets into validated
+   parameters.
+3. Add focused tracker tests.

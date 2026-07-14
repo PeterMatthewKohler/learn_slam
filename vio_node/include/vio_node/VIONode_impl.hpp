@@ -139,9 +139,6 @@ namespace vio_node {
         cv::Mat distortionFromInfo(const sensor_msgs::msg::CameraInfo& info);
         cv::Mat rectificationMatrixFromInfo(const sensor_msgs::msg::CameraInfo& info);
         cv::Mat projectionCameraMatrixFromInfo(const sensor_msgs::msg::CameraInfo& info);
-        bool saveRectifiedImage(const cv::Mat& rectified_img,
-                                const std::string& output_dir,
-                                const std::string& filename);
         std::vector<cv::Point2f> detectLeftFeatures(const cv::Mat& leftRectMap,
                                                     const cv::Mat& mask,
                                                     int max_corners);

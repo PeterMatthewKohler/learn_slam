@@ -1,6 +1,4 @@
 #include <vio_node/VIONode_impl.hpp>
-#include <filesystem>
-#include <iostream>
 #include <std_msgs/msg/header.hpp>
 #include <utility>
 
@@ -88,40 +86,6 @@ namespace vio_node {
             info.p[8], info.p[9], info.p[10]);
     }
 
-    namespace fs = std::filesystem;
-
-    bool VIONode::saveRectifiedImage(const cv::Mat& rectified_img,
-                                     const std::string& output_dir,
-                                     const std::string& filename)
-    {
-        if (rectified_img.empty()) {
-            std::cerr << "Error: rectified image is empty\n";
-            return false;
-        }
-
-        try {
-            fs::create_directories(output_dir);
-        } catch (const fs::filesystem_error& e) {
-            std::cerr << "Failed to create directory: " << e.what() << "\n";
-            return false;
-        }
-
-        fs::path output_path = fs::path(output_dir) / filename;
-
-        bool success = cv::imwrite(output_path.string(), rectified_img);
-
-        if (!success) {
-            std::cerr << "Failed to write image to: "
-                    << output_path.string() << "\n";
-            return false;
-        }
-
-        std::cout << "Saved rectified image to: "
-                << output_path.string() << "\n";
-
-        return true;
-    }
-
     std::vector<cv::Point2f> VIONode::detectLeftFeatures(const cv::Mat& leftRectMap,
                                                          const cv::Mat& mask,
                                                          int max_corners)
@@ -192,7 +156,7 @@ namespace vio_node {
             trackExistingFeaturesTemporal(prev_left_rectified_, leftRectImg);
             // Update stereo depth for surviving features
             updateStereoDepthForTrackedFeatures(leftRectImg, rightRectImg, stereoCalib);
-            
+
             const bool should_add_new = tracked_features_.size() < static_cast<std::size_t>(min_features) ||
                                         frame_idx_ % detect_every_n_frames == 0;
             if(should_add_new) {
@@ -202,23 +166,23 @@ namespace vio_node {
                 }
             }
         }
-        // Debug publishing
-        std::vector<StereoFeature> features;
-        features.reserve(tracked_features_.size());
-        for(const auto& tracked_feature : tracked_features_) {
-            StereoFeature feature;
-            feature.id = tracked_feature.id;
-            feature.px_left = tracked_feature.px_left_curr;
-            feature.px_right = tracked_feature.px_right_curr;
-            feature.disparity = tracked_feature.disparity;
-            feature.depth_m = tracked_feature.depth_m;
-            feature.point_left_cam = tracked_feature.point_left_cam_curr;
-            features.push_back(feature);
-        }
+        const bool should_publish_debug = publishDebugStereoFeatures_ &&
+                                          debugStereoFeaturePub_ &&
+                                          (frame_idx_ + 1) % 10 == 0;
+        if(should_publish_debug) {
+            std::vector<StereoFeature> features;
+            features.reserve(tracked_features_.size());
+            for(const auto& tracked_feature : tracked_features_) {
+                StereoFeature feature;
+                feature.id = tracked_feature.id;
+                feature.px_left = tracked_feature.px_left_curr;
+                feature.px_right = tracked_feature.px_right_curr;
+                feature.disparity = tracked_feature.disparity;
+                feature.depth_m = tracked_feature.depth_m;
+                feature.point_left_cam = tracked_feature.point_left_cam_curr;
+                features.push_back(feature);
+            }
 
-        static std::size_t debug_frame_count = 0;
-        debug_frame_count++;
-        if(publishDebugStereoFeatures_ && debugStereoFeaturePub_ && debug_frame_count % 10 == 0){   // Throttle publishing
             cv::Mat debug_img = makeStereoDebugImage(leftRectImg, rightRectImg, features);
             auto debug_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", debug_img).toImageMsg();
             debug_msg->header.stamp = stamp;
