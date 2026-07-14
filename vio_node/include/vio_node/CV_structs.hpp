@@ -79,9 +79,14 @@ namespace vio_node {
     };
 
     struct VisualPoseEstimate {
+        // Pose
         cv::Matx33d rotation_curr_from_prev = cv::Matx33d::eye();
         cv::Vec3d translation_curr_from_prev{0.0, 0.0, 0.0};
         std::vector<int> inlier_indices;
+        // Quality Metrics
+        double inlier_ratio = 0.0;
+        double reprojection_rmse_px = 0.0;
+        double median_3d_error_m = 0.0;
     };
 }   // namespace vio_node
 

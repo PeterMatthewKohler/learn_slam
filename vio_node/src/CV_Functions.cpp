@@ -181,7 +181,7 @@ namespace vio_node {
                     << ", Selected Count: " << selected.size());
             }
             else{
-                const double trace = pose.value().rotation_curr_from_prev(0, 0) + pose.value().rotation_curr_from_prev(1, 1) + pose.value().rotation_curr_from_prev(2, 2);
+                const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
                 const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
                 const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
 
@@ -191,18 +191,16 @@ namespace vio_node {
                     1000,
                     "Diagnostic output - Candidate Count: " << correspondences.size()
                     << ", Selected Count: " << selected.size()
-                    << ", Inlier Count: " << pose.value().inlier_indices.size()
-                    << ", Inlier Ratio: "
-                    << (selected.empty()
-                            ? 0.0
-                            : static_cast<double>(pose.value().inlier_indices.size()) /
-                                static_cast<double>(selected.size()))
+                    << ", Inlier Count: " << pose->inlier_indices.size()
+                    << ", Inlier Ratio: " << pose->inlier_ratio
+                    << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
+                    << ", Median 3D Error(m): " << pose->median_3d_error_m
                     << ", translation_curr_from_prev: ["
-                    << pose.value().translation_curr_from_prev[0] << ", "
-                    << pose.value().translation_curr_from_prev[1] << ", "
-                    << pose.value().translation_curr_from_prev[2] << "]"
+                    << pose->translation_curr_from_prev[0] << ", "
+                    << pose->translation_curr_from_prev[1] << ", "
+                    << pose->translation_curr_from_prev[2] << "]"
                     << ", Translation Norm: "
-                    << cv::norm(pose.value().translation_curr_from_prev)
+                    << cv::norm(pose->translation_curr_from_prev)
                     << ", Rotation Magnitude(deg) : " << angle_deg
                 );
             }
@@ -618,6 +616,9 @@ namespace vio_node {
         cv::Vec3d tvec;
         cv::Matx33d rotMat;
         std::vector<int> inliers;
+        std::vector<cv::Point3d> inlier_object_points;
+        std::vector<cv::Point2d> inlier_image_points;
+        std::vector<cv::Point2d> projected_points;
 
         auto isFiniteVec3 = [](const cv::Vec3d& value) {
             return std::isfinite(value[0]) &&
@@ -649,18 +650,101 @@ namespace vio_node {
                     return std::nullopt;
                 }
             }
+            // Reproject each inlier point
+            inlier_object_points.reserve(inliers.size());
+            inlier_image_points.reserve(inliers.size());
+            for(int index : inliers) {
+                if (index < 0 ||
+                    static_cast<std::size_t>(index) >= correspondences.size()) {
+                    return std::nullopt;
+                }
+                const auto& correspondence =
+                    correspondences[static_cast<std::size_t>(index)];
+
+                inlier_object_points.push_back(correspondence.point_prev);
+                inlier_image_points.emplace_back(
+                    correspondence.pixel_curr.x,
+                    correspondence.pixel_curr.y);
+            }
+            // Reproject points for RMSE quality calculation
+            cv::projectPoints(
+                inlier_object_points,   // object points
+                rvec,                   // rvec
+                tvec,                   // tvec
+                K_rect,                 // Camera matrix
+                cv::Mat(),              // No distortion since pixels are rectified
+                projected_points);      // image points
+            if (projected_points.size() != inlier_image_points.size() ||
+                projected_points.empty()) {return std::nullopt;}
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR_STREAM(
                 this->get_logger(),
                 "estimateRelativeVisualPose openCV error: " << e.what());
             return std::nullopt;
         }
-
-
         VisualPoseEstimate v;
         v.rotation_curr_from_prev = rotMat;
         v.translation_curr_from_prev = tvec;
         v.inlier_indices = inliers;
+        // --- Calculate quality metrics ---
+        // Inlier ratio
+        v.inlier_ratio = static_cast<double>(inliers.size()) / static_cast<double>(correspondences.size());
+        // Reprojection RMSE
+        double squared_error_sum = 0.0;
+        for (std::size_t i = 0; i < projected_points.size(); ++i) {
+            const double dx = projected_points[i].x - inlier_image_points[i].x;
+            const double dy = projected_points[i].y - inlier_image_points[i].y;
+            squared_error_sum += dx * dx + dy * dy;
+        }
+        const double reprojection_rmse_px = std::sqrt(squared_error_sum / projected_points.size());
+        if (!std::isfinite(reprojection_rmse_px)) {return std::nullopt;}
+        v.reprojection_rmse_px = reprojection_rmse_px;
+        // Median 3D error
+        std::vector<double> point_errors_m;
+        point_errors_m.reserve(inliers.size());
+
+        for (int index : inliers) {
+            if (index < 0 ||
+                static_cast<std::size_t>(index) >= correspondences.size()) {return std::nullopt;}
+
+            const auto& correspondence = correspondences[static_cast<std::size_t>(index)];
+
+            const cv::Vec3d point_prev(correspondence.point_prev.x,
+                                       correspondence.point_prev.y,
+                                       correspondence.point_prev.z);
+            const cv::Vec3d point_curr(correspondence.point_curr.x,
+                                       correspondence.point_curr.y,
+                                       correspondence.point_curr.z);
+
+            // Predict where the previous 3D point should be in Ck.
+            const cv::Vec3d point_curr_predicted = rotMat * point_prev + tvec;
+            // Calculate error between prediction and current
+            const double error_m = cv::norm(point_curr_predicted - point_curr);
+            // Validate
+            if (!std::isfinite(error_m)) {return std::nullopt;}
+
+            point_errors_m.push_back(error_m);
+        }
+
+        if (point_errors_m.empty()) {return std::nullopt;}
+        // Sort
+        std::sort(point_errors_m.begin(), point_errors_m.end());
+        // Get median value from sorted array
+        const std::size_t middle = point_errors_m.size() / 2;
+        double median_3d_error_m = 0.0;
+        if (point_errors_m.size() % 2 == 0) {
+            median_3d_error_m =
+                0.5 * (point_errors_m[middle - 1] +
+                        point_errors_m[middle]);
+        }
+        else {
+            median_3d_error_m = point_errors_m[middle];
+        }
+        // Validate
+        if (!std::isfinite(median_3d_error_m)) {return std::nullopt;}
+        // Store
+        v.median_3d_error_m = median_3d_error_m;
+
         return v;
     }
 
