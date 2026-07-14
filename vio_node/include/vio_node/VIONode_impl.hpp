@@ -164,9 +164,14 @@ namespace vio_node {
         void addNewTrackedFeatures(const cv::Mat& left, const cv::Mat& right,
                                    const StereoCalibration& calib, int max_new_features);
         std::vector<VisualCorrespondence> buildVisualCorrespondences(const cv::Size& image_size) const;
+        std::vector<VisualCorrespondence> selectSpatiallyBalancedCorrespondences(
+            const std::vector<VisualCorrespondence>& correspondences,
+            const cv::Size& image_size,
+            int grid_rows,
+            int grid_cols,
+            std::size_t max_correspondences) const;
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
-
         // TF2
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

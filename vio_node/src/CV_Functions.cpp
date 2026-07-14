@@ -1,6 +1,8 @@
 #include <vio_node/VIONode_impl.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <utility>
+#include <map>
+#include <queue>
 
 namespace vio_node {
     // OpenCV Helper Functions
@@ -476,6 +478,66 @@ namespace vio_node {
             visCorrs.push_back(v);
        }
        return visCorrs;
+    }
+
+    std::vector<VisualCorrespondence> VIONode::selectSpatiallyBalancedCorrespondences(
+        const std::vector<VisualCorrespondence>& correspondences,
+        const cv::Size& image_size,
+        int grid_rows,
+        int grid_cols,
+        std::size_t max_correspondences) const
+    {
+        // Return empty for invalid image dimensions, grid dimensions, or a zero limit
+        if(!std::isfinite(image_size.width) || !std::isfinite(image_size.height) ||
+           image_size.width <= 0 || image_size.height <= 0 ||
+           grid_rows <= 0 || grid_cols <= 0 || max_correspondences <= 0 ||
+           grid_rows > image_size.height || grid_cols > image_size.width){return {};}
+
+        // Divide each image into grid cells
+        // < Row, < Col, List of VisualCorrespondences @ (Row,Col) > >
+        // Max heap sorting by age w/ id as deterministic tie breaker(lower id first)
+        auto cmp = [](const VisualCorrespondence& a, const VisualCorrespondence& b) {
+            if(a.age != b.age){return a.age < b.age;}   // Higher age first
+            return a.id > b.id; // Lower ID first
+        };
+        std::map<std::size_t, std::map<std::size_t,
+            std::priority_queue<VisualCorrespondence, std::vector<VisualCorrespondence>, decltype(cmp)>>> grid;
+        for(const auto& c : correspondences) {
+            // Get the grid location of the correspondence
+            float px = c.pixel_curr.x, py = c.pixel_curr.y;
+            if (!std::isfinite(px) || !std::isfinite(py) ||
+                px < 0.0F || py < 0.0F ||
+                px >= static_cast<float>(image_size.width) ||
+                py >= static_cast<float>(image_size.height)){continue;}
+            // Normalized indexing and clamp to final cell
+            const std::size_t row = std::min(grid_rows - 1,
+                static_cast<int>(py * grid_rows / image_size.height));
+            const std::size_t col = std::min(grid_cols - 1,
+                static_cast<int>(px * grid_cols / image_size.width));
+            // Add to grid
+            grid[row].try_emplace(col, cmp).first->second.push(c);
+        }
+        // Select correspondences round-robin from each non-empty cell
+        std::vector<VisualCorrespondence> output;
+        std::size_t count = 0;
+        while (count < max_correspondences)
+        {
+            bool empty = true;
+            for (auto& [row_index, row_map] : grid){
+                for (auto& [col_index, queue] : row_map){
+                    if (!queue.empty()){
+                        output.push_back(queue.top());
+                        queue.pop();
+                        ++count;
+                        empty = false;
+                        if (count >= max_correspondences){break;}
+                    }
+                }
+                if (count >= max_correspondences){break;}
+            }
+            if (empty){break;}
+        }
+        return output;
     }
 
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
