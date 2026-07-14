@@ -440,7 +440,43 @@ namespace vio_node {
         }
     }
 
-
+    std::vector<VisualCorrespondence> VIONode::buildVisualCorrespondences(const cv::Size& image_size) const
+    {
+        /* Iterate over tracked features and retain only tracks that satisfy
+            - age >= 2
+            - Current pixel coordinates are finite
+            - Current pixel is inside image
+            - Previous and current 3D coordinates are finite
+            - Previous and current z are positive
+            - depth_m is finite and positive
+        */
+       std::vector<VisualCorrespondence> visCorrs;
+       for(const auto& feature : tracked_features_) {
+            if(feature.age < 2){continue;}  // age >= 2
+            if (!std::isfinite(feature.px_left_curr.x) ||
+                !std::isfinite(feature.px_left_curr.y)) {continue;} // Current pixel coords are finite
+            if(feature.px_left_curr.x >= image_size.width || feature.px_left_curr.x < 0 ||
+               feature.px_left_curr.y >= image_size.height || feature.px_left_curr.y < 0){continue;} // Current pixel is inside image
+            if(!(std::isfinite(feature.point_left_cam_prev.x) &&
+                 std::isfinite(feature.point_left_cam_prev.y) &&
+                 std::isfinite(feature.point_left_cam_prev.z) &&
+                 std::isfinite(feature.point_left_cam_curr.x) &&
+                 std::isfinite(feature.point_left_cam_curr.y) &&
+                 std::isfinite(feature.point_left_cam_curr.z))){continue;} // Prev and curr 3d coords are finite
+            if(!(feature.point_left_cam_prev.z > 0 &&
+                 feature.point_left_cam_curr.z > 0)){continue;} // Prev and curr z are positive
+            if(!std::isfinite(feature.depth_m) || feature.depth_m <= 0){continue;} // depth_m is finite and positive
+            // Build our visual correspondence
+            VisualCorrespondence v;
+            v.id = feature.id;
+            v.age = feature.age;
+            v.point_prev = feature.point_left_cam_prev;
+            v.pixel_curr = feature.px_left_curr;
+            v.point_curr = feature.point_left_cam_curr;
+            visCorrs.push_back(v);
+       }
+       return visCorrs;
+    }
 
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                  const std::vector<StereoFeature>& features)

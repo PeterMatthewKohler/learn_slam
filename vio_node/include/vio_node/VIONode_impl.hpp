@@ -86,7 +86,6 @@ namespace vio_node {
             bool initialized = false;
         };
 
-        // OpenCV Helpers
         struct RectificationData {
             cv::Mat K;
             cv::Mat D;
@@ -97,6 +96,15 @@ namespace vio_node {
             cv::Mat map2;
 
             bool initialized = false;
+        };
+
+        struct VisualCorrespondence {
+            int id = -1;
+            int age = 0;
+
+            cv::Point3d point_prev;
+            cv::Point2f pixel_curr;
+            cv::Point3d point_curr;
         };
 
     class VIONode : public rclcpp::Node
@@ -155,6 +163,7 @@ namespace vio_node {
                                           const std::vector<TrackedFeature>& existing_features) const;
         void addNewTrackedFeatures(const cv::Mat& left, const cv::Mat& right,
                                    const StereoCalibration& calib, int max_new_features);
+        std::vector<VisualCorrespondence> buildVisualCorrespondences(const cv::Size& image_size) const;
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
 
