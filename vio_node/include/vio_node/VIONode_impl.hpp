@@ -50,6 +50,16 @@ namespace vio_node {
             cv::Point3d point_left_cam;
         };
 
+        struct StereoMatch {
+            std::size_t input_index;
+
+            cv::Point2f px_right;
+            cv::Point3d point_left_cam;
+
+            double disparity;
+            double depth_m;
+        };
+
         struct TrackedFeature {
             int id = -1;
 
@@ -140,6 +150,10 @@ namespace vio_node {
         void trackExistingFeaturesTemporal(const cv::Mat& prev_left, const cv::Mat& curr_left);
         void updateStereoDepthForTrackedFeatures(const cv::Mat& curr_left, const cv::Mat& curr_right,
                                                  const StereoCalibration& calib);
+        std::vector<StereoMatch> computeStereoMatches(const cv::Mat& left,
+                                                      const cv::Mat& right,
+                                                      const std::vector<cv::Point2f>& left_points,
+                                                      const StereoCalibration& calib) const;
         cv::Mat buildFeatureDetectionMask(const cv::Size& image_size,
                                           const std::vector<TrackedFeature>& existing_features) const;
         void addNewTrackedFeatures(const cv::Mat& left, const cv::Mat& right,

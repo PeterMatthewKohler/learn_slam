@@ -316,14 +316,37 @@ namespace vio_node {
         for(const auto& f : tracked_features_) {curr_left_points.push_back(f.px_left_curr);}
         if(curr_left_points.empty()) {return;}
 
-        std::vector<cv::Point2f> curr_right_points;
+        std::vector<StereoMatch> stereo_matches = computeStereoMatches(curr_left, curr_right,
+                                                                       curr_left_points, calib);
+        std::vector<TrackedFeature> depth_valid_features;
+        depth_valid_features.reserve(stereo_matches.size());
+        for (const auto& match : stereo_matches) {
+            TrackedFeature f = tracked_features_[match.input_index];
+            f.px_right_curr = match.px_right;
+            f.disparity = match.disparity;
+            f.depth_m = match.depth_m;
+            f.point_left_cam_curr = match.point_left_cam;
+            depth_valid_features.push_back(f);
+        }
+        tracked_features_ = std::move(depth_valid_features);
+    }
+
+    std::vector<StereoMatch> VIONode::computeStereoMatches(const cv::Mat& left_img,
+                                                           const cv::Mat& right_img,
+                                                           const std::vector<cv::Point2f>& left_points,
+                                                           const StereoCalibration& calib) const
+    {
+        // For each left feature, track into the right image
+        if(left_points.empty()) {return {};}
+
+        std::vector<cv::Point2f> right_points;
         std::vector<unsigned char> stereo_status;
         std::vector<float> stereo_errors;
         cv::calcOpticalFlowPyrLK(
-            curr_left,
-            curr_right,
-            curr_left_points,
-            curr_right_points,
+            left_img,
+            right_img,
+            left_points,
+            right_points,
             stereo_status,
             stereo_errors,
             cv::Size(21, 21),
@@ -335,7 +358,7 @@ namespace vio_node {
             )
         );
         // Now update depth
-        std::vector<TrackedFeature> depth_valid_features;
+        std::vector<StereoMatch> stereo_matches;
 
         const double max_y_error_px = 2.0;
         const double min_depth_m = 0.25;
@@ -344,11 +367,11 @@ namespace vio_node {
         const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
         const float max_stereo_lk_error = 20.0f;
 
-        for(std::size_t i = 0; i < tracked_features_.size(); i++) {
+        for(std::size_t i = 0; i < left_points.size(); i++) {
             if(!stereo_status[i]){continue;}
-            
-            const cv::Point2f& pl = curr_left_points[i];
-            const cv::Point2f& pr = curr_right_points[i];
+
+            const cv::Point2f& pl = left_points[i];
+            const cv::Point2f& pr = right_points[i];
             // Y error check
             const double y_error = std::abs(pl.y - pr.y);
             if(y_error > max_y_error_px){continue;}
@@ -361,19 +384,20 @@ namespace vio_node {
             const double depth = calib.fx * calib.baseline_m / disparity;
             if(depth < min_depth_m || depth > max_depth_m){continue;}
 
-            TrackedFeature f = tracked_features_[i];
-            f.px_right_curr = pr;
-            f.disparity = disparity;
-            f.depth_m = depth;
+            StereoMatch match;
+            match.input_index = i;
+            match.px_right = pr;
+            match.disparity = disparity;
+            match.depth_m = depth;
             // Calculate 3D coordinates
             const double x = (static_cast<double>(pl.x) - calib.cx) * depth / calib.fx;
             const double y = (static_cast<double>(pl.y) - calib.cy) * depth / calib.fy;
             const double z = depth;
-            
-            f.point_left_cam_curr = cv::Point3d(x, y, z);
-            depth_valid_features.push_back(f);
+
+            match.point_left_cam = cv::Point3d(x, y, z);
+            stereo_matches.push_back(match);
         }
-        tracked_features_ = std::move(depth_valid_features);
+        return stereo_matches;
     }
 
     cv::Mat VIONode::buildFeatureDetectionMask(const cv::Size& image_size,
@@ -407,60 +431,18 @@ namespace vio_node {
         std::vector<cv::Point2f> new_left_points = detectLeftFeatures(left, mask, max_new_features);
         if(new_left_points.empty()){return;}
         // Match from left to right image using optical flow
-        std::vector<cv::Point2f> new_right_points;
-        std::vector<unsigned char> status;
-        std::vector<float> errors;
-        cv::calcOpticalFlowPyrLK(
-            left,
-            right,
-            new_left_points,
-            new_right_points,
-            status,
-            errors,
-            cv::Size(21, 21),
-            3,
-            cv::TermCriteria(
-                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
-                30,
-                0.01
-            )
-        );
-        // Now do filtering
-        const double max_y_error_px = 2.0;
-        const double min_depth_m = 0.25;
-        const double max_depth_m = 30.0;
-        const double min_disparity_px = calib.fx * calib.baseline_m / max_depth_m;
-        const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
-        const float max_stereo_lk_error = 20.0f;
-
-        for(std::size_t i = 0; i < new_left_points.size(); i++) {
-            // Bad status or errors exist
-            if(!status[i] || errors[i] > max_stereo_lk_error){continue;}
-
-            const cv::Point2f& pl = new_left_points[i];
-            const cv::Point2f& pr = new_right_points[i];
-            // y error check
-            const double y_error = std::abs(pl.y - pr.y);
-            if(y_error > max_y_error_px){continue;}
-            // disparity check
-            const double disparity = static_cast<double>(pl.x - pr.x);
-            if(disparity < min_disparity_px || disparity > max_disparity_px){continue;}
-            // depth sanity check
-            const double depth = calib.fx * calib.baseline_m / disparity;
-            if(depth < min_depth_m || depth > max_depth_m){continue;}
-            // Calc coordinates
-            const double x = (static_cast<double>(pl.x) - calib.cx) * depth / calib.fx;
-            const double y = (static_cast<double>(pl.y) - calib.cy) * depth / calib.fy;
-            const double z = depth;
-
+        std::vector<StereoMatch> matches = computeStereoMatches(left, right,
+                                                                new_left_points, calib);
+        for (const auto& match : matches) {
+            const cv::Point2f& pl = new_left_points[match.input_index];
             TrackedFeature f;
             f.id = next_feature_id_++;
             f.px_left_prev = pl;
             f.px_left_curr = pl;
-            f.px_right_curr = pr;
-            f.disparity = disparity;
-            f.depth_m = depth;
-            f.point_left_cam_curr = cv::Point3d(x, y, z);
+            f.px_right_curr = match.px_right;
+            f.disparity = match.disparity;
+            f.depth_m = match.depth_m;
+            f.point_left_cam_curr = match.point_left_cam;
             f.point_left_cam_prev = f.point_left_cam_curr;  // Preserve old point
             f.age = 1;
 
