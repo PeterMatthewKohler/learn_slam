@@ -3,6 +3,7 @@
 #include <utility>
 #include <map>
 #include <queue>
+#include <algorithm>
 
 namespace vio_node {
     // OpenCV Helper Functions
@@ -158,6 +159,54 @@ namespace vio_node {
             trackExistingFeaturesTemporal(prev_left_rectified_, leftRectImg);
             // Update stereo depth for surviving features
             updateStereoDepthForTrackedFeatures(leftRectImg, rightRectImg, stereoCalib);
+            // Build visual correspondences
+            const auto correspondences = buildVisualCorrespondences(leftRectImg.size());
+            // Select spatially balanced correspondences
+            const auto selected = selectSpatiallyBalancedCorrespondences(
+                                    correspondences,
+                                    leftRectImg.size(),
+                                    3,
+                                    4,
+                                    200);
+            // Calculate pose
+            const auto pose = estimateRelativeVisualPose(selected, stereoCalib);
+
+            // ---------------- Diagnostic - TODO REMOVE -------------------
+            if(!pose){
+                RCLCPP_WARN_STREAM_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Visual PnP failed - Candidate Count: " << correspondences.size()
+                    << ", Selected Count: " << selected.size());
+            }
+            else{
+                const double trace = pose.value().rotation_curr_from_prev(0, 0) + pose.value().rotation_curr_from_prev(1, 1) + pose.value().rotation_curr_from_prev(2, 2);
+                const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+                const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
+
+                RCLCPP_INFO_STREAM_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Diagnostic output - Candidate Count: " << correspondences.size()
+                    << ", Selected Count: " << selected.size()
+                    << ", Inlier Count: " << pose.value().inlier_indices.size()
+                    << ", Inlier Ratio: "
+                    << (selected.empty()
+                            ? 0.0
+                            : static_cast<double>(pose.value().inlier_indices.size()) /
+                                static_cast<double>(selected.size()))
+                    << ", translation_curr_from_prev: ["
+                    << pose.value().translation_curr_from_prev[0] << ", "
+                    << pose.value().translation_curr_from_prev[1] << ", "
+                    << pose.value().translation_curr_from_prev[2] << "]"
+                    << ", Translation Norm: "
+                    << cv::norm(pose.value().translation_curr_from_prev)
+                    << ", Rotation Magnitude(deg) : " << angle_deg
+                );
+            }
+            // ---------------- TODO REMOVE END -------------------------
 
             const bool should_add_new = tracked_features_.size() < static_cast<std::size_t>(min_features) ||
                                         frame_idx_ % detect_every_n_frames == 0;
