@@ -357,6 +357,25 @@ namespace vio_node {
                 0.01
             )
         );
+        // Right to left validation
+        std::vector<cv::Point2f> backtracked_points;
+        std::vector<unsigned char> backward_status;
+        std::vector<float> backward_errors;
+        cv::calcOpticalFlowPyrLK(
+            right_img,
+            left_img,
+            right_points,
+            backtracked_points,
+            backward_status,
+            backward_errors,
+            cv::Size(21, 21),
+            3,
+            cv::TermCriteria(
+                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
+                30,
+                0.01
+            )
+        );
         // Now update depth
         std::vector<StereoMatch> stereo_matches;
 
@@ -366,9 +385,10 @@ namespace vio_node {
         const double min_disparity_px = calib.fx * calib.baseline_m / max_depth_m;
         const double max_disparity_px = calib.fx * calib.baseline_m / min_depth_m;
         const float max_stereo_lk_error = 20.0f;
+        const double max_stereo_fb_error_px = 1.0;
 
         for(std::size_t i = 0; i < left_points.size(); i++) {
-            if(!stereo_status[i]){continue;}
+            if(!stereo_status[i] || !backward_status[i]){continue;}
 
             const cv::Point2f& pl = left_points[i];
             const cv::Point2f& pr = right_points[i];
@@ -379,11 +399,17 @@ namespace vio_node {
             const double disparity = static_cast<double>(pl.x - pr.x);
             if(disparity < min_disparity_px || disparity > max_disparity_px){continue;}
             // Error check
-            if(stereo_errors[i] > max_stereo_lk_error){continue;}
+            if(stereo_errors[i] > max_stereo_lk_error ||
+               backward_errors[i] > max_stereo_lk_error){continue;}
+            const double fb_error = cv::norm(left_points[i] - backtracked_points[i]);
+            if(fb_error > max_stereo_fb_error_px){continue;}
             // Calculate depth
             const double depth = calib.fx * calib.baseline_m / disparity;
             if(depth < min_depth_m || depth > max_depth_m){continue;}
-
+            // Explicitly verify right_points[i] is inside right img
+            if (pr.x < 0 || pr.x >= right_img.cols ||
+                pr.y < 0 || pr.y >= right_img.rows) {continue;}
+            // Build our match
             StereoMatch match;
             match.input_index = i;
             match.px_right = pr;
