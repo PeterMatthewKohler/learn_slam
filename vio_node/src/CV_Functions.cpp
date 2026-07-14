@@ -258,13 +258,39 @@ namespace vio_node {
                 0.01
             )
         );
+        // Reverse check points
+        std::vector<cv::Point2f> backtracked_points;
+        backtracked_points.reserve(prev_points.size());
+        std::vector<unsigned char> backward_status;
+        std::vector<float> backward_errors;
+
+        cv::calcOpticalFlowPyrLK(
+            curr_left,
+            prev_left,
+            curr_points,
+            backtracked_points,
+            backward_status,
+            backward_errors,
+            cv::Size(21, 21),
+            3,
+            cv::TermCriteria(
+                cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
+                30,
+                0.01
+            )
+        );
         // Now filter
         std::vector<TrackedFeature> surviving_features;
         const float max_temporal_lk_error = 20.0f;
+        const double max_temporal_fb_error_px = 1.0;
 
         for(std::size_t i = 0; i < tracked_features_.size(); i++) {
-            if(!status[i]){continue;}
-            if(errors[i] > max_temporal_lk_error){continue;}
+            if(!status[i] || !backward_status[i]){continue;}
+            if(errors[i] > max_temporal_lk_error ||
+               backward_errors[i] > max_temporal_lk_error){continue;}
+
+            const double fb_error = cv::norm(prev_points[i] - backtracked_points[i]);
+            if(fb_error > max_temporal_fb_error_px){continue;}
 
             const auto& pt = curr_points[i];
             if(pt.x < 0 || pt.x >= curr_left.cols ||
