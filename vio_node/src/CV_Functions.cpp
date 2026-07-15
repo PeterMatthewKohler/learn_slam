@@ -180,6 +180,16 @@ namespace vio_node {
                     "Visual PnP failed - Candidate Count: " << correspondences.size()
                     << ", Selected Count: " << selected.size());
             }
+            else if(!passesVisualPoseQualityChecks(*pose)){
+                RCLCPP_WARN_STREAM_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Visual pose rejected - Inlier Count: " << pose->inlier_indices.size()
+                    << ", Inlier Ratio: " << pose->inlier_ratio
+                    << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
+                    << ", Median 3D Error(m): " << pose->median_3d_error_m);
+            }
             else{
                 const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
                 const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
@@ -746,6 +756,27 @@ namespace vio_node {
         v.median_3d_error_m = median_3d_error_m;
 
         return v;
+    }
+
+    bool VIONode::passesVisualPoseQualityChecks(const VisualPoseEstimate& estimate) const
+    {
+        constexpr std::size_t min_inliers = 30;
+        constexpr double min_inlier_ratio = 0.50;
+        constexpr double max_reprojection_rmse_px = 1.0;
+        constexpr double max_median_3d_error_m = 0.5;
+
+        if(estimate.inlier_indices.size() < min_inliers){return false;}
+        if(!std::isfinite(estimate.inlier_ratio) ||
+           !std::isfinite(estimate.reprojection_rmse_px) ||
+           !std::isfinite(estimate.median_3d_error_m)){return false;}
+        if(estimate.inlier_ratio < 0.0 || estimate.inlier_ratio > 1.0 ||
+           estimate.reprojection_rmse_px < 0.0 ||
+           estimate.median_3d_error_m < 0.0){return false;}
+        if(estimate.inlier_ratio < min_inlier_ratio ||
+           estimate.reprojection_rmse_px > max_reprojection_rmse_px ||
+           estimate.median_3d_error_m > max_median_3d_error_m){return false;}
+
+        return true;
     }
 
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
