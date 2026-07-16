@@ -34,6 +34,7 @@
 #include <vector>
 #include <chrono>
 #include <stdexcept>
+#include <deque>
 
 namespace vio_node {
 
@@ -140,8 +141,7 @@ namespace vio_node {
         std::optional<VisualCameraPose> visualCameraPoseFromTransform(
             const geometry_msgs::msg::TransformStamped& transform) const;
         // Internal states
-        std::optional<sensor_msgs::msg::Imu> currentImu_;
-        std::optional<rclcpp::Time> lastImuStamp_;
+        std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;
@@ -174,6 +174,8 @@ namespace vio_node {
         std::string rightCameraFrameID_;
         bool publishTF_;
         double cameraIMUTimeOffsetS_;
+        double imuMsgGapThresholdS_;
+        double imuMsgBufferWindowS_;
     };
 
 }   // namespace vio_node

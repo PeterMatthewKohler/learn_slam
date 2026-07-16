@@ -24,7 +24,7 @@ namespace vio_node {
         // Subscribers
         auto imageQOS = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
         imuSub_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            imuSubTopicName_, 10, std::bind(&VIONode::imuCallback, this, std::placeholders::_1));
+            imuSubTopicName_, 200, std::bind(&VIONode::imuCallback, this, std::placeholders::_1));
         // Synchronize stereo camera image subscribers
         leftImgSub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
             this, leftImgSubTopicName_, imageQOS.get_rmw_qos_profile()
@@ -457,25 +457,85 @@ namespace vio_node {
         cameraIMUTimeOffsetS_ = this->get_parameter("camera_imu_time_offset_sec").as_double();
         if (!std::isfinite(cameraIMUTimeOffsetS_)) {throw std::invalid_argument("camera_imu_time_offset_sec must be finite");}
 
+        this->declare_parameter("imu_msg_gap_threshold_s", 0.05);
+        imuMsgGapThresholdS_ = this->get_parameter("imu_msg_gap_threshold_s").as_double();
+        if (!std::isfinite(imuMsgGapThresholdS_) ||
+            imuMsgGapThresholdS_ <= 0) {throw std::invalid_argument("imu_msg_gap_threshold_s must be finite and positive");}
+
+        this->declare_parameter("imu_msg_buffer_window_s", 10.0);
+        imuMsgBufferWindowS_ = this->get_parameter("imu_msg_buffer_window_s").as_double();
+        if (!std::isfinite(imuMsgBufferWindowS_) ||
+            imuMsgBufferWindowS_ <= 0) {throw std::invalid_argument("imu_msg_buffer_window_s must be finite and positive");}
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     {
         // Reject incorrect frame IDs
         if(!validateFrameID(msg->header.frame_id, imuFrameID_, "IMU")){return;}
-        rclcpp::Time imu_stamp(msg->header.stamp);
+        // Input validation
+        const auto vector_is_finite = [](const geometry_msgs::msg::Vector3& v) {
+            return std::isfinite(v.x) &&
+                std::isfinite(v.y) &&
+                std::isfinite(v.z);
+        };
+        // Not consuming currently
+        // const auto covariance_is_finite = [](const std::array<double, 9>& covariance) {
+        //     for (const double value : covariance) {
+        //         if (!std::isfinite(value)) {
+        //             return false;
+        //         }
+        //     }
+        //     return true;
+        // };
+
+        bool isFinite = (
+            vector_is_finite(msg->angular_velocity) &&
+            vector_is_finite(msg->linear_acceleration));
+            // Not consuming covariance currently
+            // covariance_is_finite(msg->orientation_covariance) &&
+            // covariance_is_finite(msg->angular_velocity_covariance) &&
+            // covariance_is_finite(msg->linear_acceleration_covariance));
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if(lastImuStamp_ && imu_stamp <= lastImuStamp_.value()) {
+        if(isFinite)
+        {
+            rclcpp::Time msg_stamp(msg->header.stamp);
+            if(imuBuffer_.empty()) {
+                imuBuffer_.push_front(*msg);
+            }
+            else {
+                rclcpp::Time buffer_latest_stamp(imuBuffer_.front().header.stamp);
+                if(msg_stamp <= buffer_latest_stamp) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "IMU message rejected, current timestamp older than latest accepted. Current=%.9f, Latest=%.9f",
+                        msg_stamp.seconds(), buffer_latest_stamp.seconds());
+                    return;
+                }
+                const double imu_gap_s = (msg_stamp - buffer_latest_stamp).seconds();
+                if(imu_gap_s > imuMsgGapThresholdS_) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "IMU message gap(%.3f) between samples greater than imu_msg_gap_threshold_s(%.3f)", imu_gap_s, imuMsgGapThresholdS_);
+                }
+                // Push then enforce our buffer window
+                imuBuffer_.push_front(*msg);
+                while(!imuBuffer_.empty() && (msg_stamp - rclcpp::Time(imuBuffer_.back().header.stamp)).seconds() >
+                                                            imuMsgBufferWindowS_) {
+                    imuBuffer_.pop_back();
+                }
+            }
+        }
+        else {
             RCLCPP_WARN_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 1000,
-                "IMU message rejected, current timestamp older than latest accepted. Current=%.9f, Latest=%.9f",
-                imu_stamp.seconds(), lastImuStamp_.value().seconds());
-            return;
+                "IMU message rejected, message values nonfinite");
         }
-        lastImuStamp_.emplace(imu_stamp);
-        currentImu_ = *msg;
     }
 
     void VIONode::leftCameraInfoCallback(sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
