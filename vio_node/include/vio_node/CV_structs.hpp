@@ -94,6 +94,11 @@ namespace vio_node {
         cv::Vec3d translation_world_from_camera{0.0, 0.0, 0.0};
     };
 
+    struct VisualBodyPose {
+        cv::Matx33d rotation_world_from_body = cv::Matx33d::eye();
+        cv::Vec3d translation_world_from_body{0.0, 0.0, 0.0};
+    };
+
 }   // namespace vio_node
 
 #endif  // CV_STRUCTS_HPP

@@ -237,33 +237,97 @@ namespace vio_node {
                     }
                     else{
                         visualCameraPose_ = *composed;
-                        // ---- DEBUG STUFF ---
-                        const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
-                        const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
-                        const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
+                        std::optional<geometry_msgs::msg::TransformStamped> imu_from_left;
+                        std::optional<geometry_msgs::msg::TransformStamped> imu_from_body;
+                        {
+                            std::lock_guard<std::mutex> lock(dataMutex_);
+                            imu_from_left = imuFromLeftCamera_;
+                            imu_from_body = imuFromBody_;
+                        }
+                        const auto body_pose = imu_from_left && imu_from_body
+                            ? visualBodyPoseFromCameraPose(
+                                *visualCameraPose_,
+                                *imu_from_left,
+                                *imu_from_body)
+                            : std::nullopt;
+                        const auto body_orientation = body_pose
+                            ? quaternionFromRotationMatrix(
+                                body_pose->rotation_world_from_body)
+                            : std::nullopt;
+                        if(!body_pose) {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Failed to derive visual body pose from camera pose and extrinsics"
+                            );
+                        }
+                        else if(!body_orientation) {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Failed to convert visual body rotation to a quaternion"
+                            );
+                        }
+                        else {
+                            // ---- DEBUG STUFF ---
+                            const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
+                            const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+                            const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
 
-                        RCLCPP_INFO_STREAM_THROTTLE(
-                            get_logger(),
-                            *get_clock(),
-                            1000,
-                            "Diagnostic output - Candidate Count: " << correspondences.size()
-                            << ", Selected Count: " << selected.size()
-                            << ", Inlier Count: " << pose->inlier_indices.size()
-                            << ", Inlier Ratio: " << pose->inlier_ratio
-                            << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
-                            << ", Median 3D Error(m): " << pose->median_3d_error_m
-                            << ", translation_curr_from_prev: ["
-                            << pose->translation_curr_from_prev[0] << ", "
-                            << pose->translation_curr_from_prev[1] << ", "
-                            << pose->translation_curr_from_prev[2] << "]"
-                            << ", Translation Norm: "
-                            << cv::norm(pose->translation_curr_from_prev)
-                            << ", Rotation Magnitude(deg) : " << angle_deg
-                            << ", World Camera Translation: ["
-                            << visualCameraPose_->translation_world_from_camera[0] << ", "
-                            << visualCameraPose_->translation_world_from_camera[1] << ", "
-                            << visualCameraPose_->translation_world_from_camera[2] << "]"
-                        );
+                            // Extract absolute yaw from the normalized R_W_B
+                            // quaternion using the standard ZYX convention.
+                            // Positive yaw is a counter-clockwise turn around
+                            // the world's +Z axis under ROS REP-103 axes.
+                            const double sin_yaw = 2.0 *
+                                (body_orientation->w * body_orientation->z +
+                                 body_orientation->x * body_orientation->y);
+                            const double cos_yaw = 1.0 - 2.0 *
+                                (body_orientation->y * body_orientation->y +
+                                 body_orientation->z * body_orientation->z);
+                            const double body_yaw_deg =
+                                std::atan2(sin_yaw, cos_yaw) * 180.0 / CV_PI;
+                            const double body_quaternion_norm = std::sqrt(
+                                body_orientation->x * body_orientation->x +
+                                body_orientation->y * body_orientation->y +
+                                body_orientation->z * body_orientation->z +
+                                body_orientation->w * body_orientation->w);
+
+                            RCLCPP_INFO_STREAM_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Diagnostic output - Candidate Count: " << correspondences.size()
+                                << ", Selected Count: " << selected.size()
+                                << ", Inlier Count: " << pose->inlier_indices.size()
+                                << ", Inlier Ratio: " << pose->inlier_ratio
+                                << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
+                                << ", Median 3D Error(m): " << pose->median_3d_error_m
+                                << ", translation_curr_from_prev: ["
+                                << pose->translation_curr_from_prev[0] << ", "
+                                << pose->translation_curr_from_prev[1] << ", "
+                                << pose->translation_curr_from_prev[2] << "]"
+                                << ", Translation Norm: "
+                                << cv::norm(pose->translation_curr_from_prev)
+                                << ", Rotation Magnitude(deg) : " << angle_deg
+                                << ", World Camera Translation: ["
+                                << visualCameraPose_->translation_world_from_camera[0] << ", "
+                                << visualCameraPose_->translation_world_from_camera[1] << ", "
+                                << visualCameraPose_->translation_world_from_camera[2] << "]"
+                                << ", World Body Translation: ["
+                                << body_pose->translation_world_from_body[0] << ", "
+                                << body_pose->translation_world_from_body[1] << ", "
+                                << body_pose->translation_world_from_body[2] << "]"
+                                << ", World Body Quaternion(xyzw): ["
+                                << body_orientation->x << ", "
+                                << body_orientation->y << ", "
+                                << body_orientation->z << ", "
+                                << body_orientation->w << "]"
+                                << ", Quaternion Norm: " << body_quaternion_norm
+                                << ", World Body Yaw(deg): " << body_yaw_deg
+                            );
+                        }
                     }
                 }
             }

@@ -107,6 +107,12 @@ namespace vio_node {
         std::optional<VisualCameraPose> composeVisualCameraPose(
             const VisualCameraPose& previous_pose,
             const VisualPoseEstimate& relative_pose) const;
+        std::optional<VisualBodyPose> visualBodyPoseFromCameraPose(
+            const VisualCameraPose& world_from_camera,
+            const geometry_msgs::msg::TransformStamped& imu_from_camera,
+            const geometry_msgs::msg::TransformStamped& imu_from_body) const;
+        std::optional<geometry_msgs::msg::Quaternion> quaternionFromRotationMatrix(
+            const cv::Matx33d& rotation) const;
 
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
@@ -127,6 +133,10 @@ namespace vio_node {
                                const std::string& expected_target,
                                const std::string& expected_source);
         bool validateStereoTransform(const geometry_msgs::msg::TransformStamped& left_from_right);
+        bool transformToOpenCV(
+            const geometry_msgs::msg::TransformStamped& transform,
+            cv::Matx33d& rotation_target_from_source,
+            cv::Vec3d& translation_target_from_source) const;
         std::optional<VisualCameraPose> visualCameraPoseFromTransform(
             const geometry_msgs::msg::TransformStamped& transform) const;
         // Internal states

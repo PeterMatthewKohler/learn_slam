@@ -217,8 +217,10 @@ namespace vio_node {
         return true;
     }
 
-    std::optional<VisualCameraPose> VIONode::visualCameraPoseFromTransform(
-        const geometry_msgs::msg::TransformStamped& transform) const
+    bool VIONode::transformToOpenCV(
+        const geometry_msgs::msg::TransformStamped& transform,
+        cv::Matx33d& rotation_target_from_source,
+        cv::Vec3d& translation_target_from_source) const
     {
         // Validate all translation and quaternion components
         const auto& translation = transform.transform.translation;
@@ -229,7 +231,7 @@ namespace vio_node {
            !std::isfinite(rotation.x) ||
            !std::isfinite(rotation.y) ||
            !std::isfinite(rotation.z) ||
-           !std::isfinite(rotation.w)){return std::nullopt;}
+           !std::isfinite(rotation.w)){return false;}
         // Normalize
         const double quaternion_norm = std::sqrt(
             rotation.x * rotation.x +
@@ -238,33 +240,176 @@ namespace vio_node {
             rotation.w * rotation.w);
 
         if(!std::isfinite(quaternion_norm) ||
-            quaternion_norm <= 1e-12) {return std::nullopt;}
+            quaternion_norm <= 1e-12) {return false;}
         tf2::Quaternion quat(rotation.x, rotation.y, rotation.z, rotation.w);
         quat /= quaternion_norm;
 
         tf2::Matrix3x3 rotMat;
         rotMat.setRotation(quat);
         // Copy into cv Matrix
-        const cv::Matx33d cv_rotMat{rotMat[0][0], rotMat[0][1], rotMat[0][2],
-                                    rotMat[1][0], rotMat[1][1], rotMat[1][2],
-                                    rotMat[2][0], rotMat[2][1], rotMat[2][2]};
-        const cv::Vec3d cv_transl{translation.x, translation.y, translation.z};
+        rotation_target_from_source = cv::Matx33d{
+            rotMat[0][0], rotMat[0][1], rotMat[0][2],
+            rotMat[1][0], rotMat[1][1], rotMat[1][2],
+            rotMat[2][0], rotMat[2][1], rotMat[2][2]};
+        translation_target_from_source = cv::Vec3d{
+            translation.x, translation.y, translation.z};
         // Validate output
         bool rotation_is_finite = true;
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 3; ++col) {
                 rotation_is_finite &=
-                    std::isfinite(cv_rotMat(row, col));
+                    std::isfinite(rotation_target_from_source(row, col));
             }
         }
         const bool translation_is_finite =
-            std::isfinite(cv_transl[0]) &&
-            std::isfinite(cv_transl[1]) &&
-            std::isfinite(cv_transl[2]);
+            std::isfinite(translation_target_from_source[0]) &&
+            std::isfinite(translation_target_from_source[1]) &&
+            std::isfinite(translation_target_from_source[2]);
 
-        if (!rotation_is_finite || !translation_is_finite) {return std::nullopt;}
-        // Return pose
-        return VisualCameraPose{cv_rotMat, cv_transl};
+        return rotation_is_finite && translation_is_finite;
+    }
+
+    std::optional<VisualCameraPose> VIONode::visualCameraPoseFromTransform(
+        const geometry_msgs::msg::TransformStamped& transform) const
+    {
+        cv::Matx33d rotation_world_from_camera;
+        cv::Vec3d translation_world_from_camera;
+        if(!transformToOpenCV(
+            transform,
+            rotation_world_from_camera,
+            translation_world_from_camera)){return std::nullopt;}
+
+        return VisualCameraPose{
+            rotation_world_from_camera,
+            translation_world_from_camera};
+    }
+
+    std::optional<VisualBodyPose> VIONode::visualBodyPoseFromCameraPose(
+        const VisualCameraPose& world_from_camera,
+        const geometry_msgs::msg::TransformStamped& imu_from_camera,
+        const geometry_msgs::msg::TransformStamped& imu_from_body) const
+    {
+        const auto isFiniteRotation = [](const cv::Matx33d& rotation) {
+            for(int row = 0; row < 3; ++row) {
+                for(int col = 0; col < 3; ++col) {
+                    if(!std::isfinite(rotation(row, col))){return false;}
+                }
+            }
+            return true;
+        };
+        const auto isFiniteTranslation = [](const cv::Vec3d& translation) {
+            return std::isfinite(translation[0]) &&
+                   std::isfinite(translation[1]) &&
+                   std::isfinite(translation[2]);
+        };
+
+        if(!isFiniteRotation(world_from_camera.rotation_world_from_camera) ||
+           !isFiniteTranslation(world_from_camera.translation_world_from_camera)){
+            return std::nullopt;
+        }
+
+        cv::Matx33d R_I_CL;
+        cv::Vec3d t_I_CL;
+        cv::Matx33d R_I_B;
+        cv::Vec3d t_I_B;
+        if(!transformToOpenCV(imu_from_camera, R_I_CL, t_I_CL) ||
+           !transformToOpenCV(imu_from_body, R_I_B, t_I_B)){
+            return std::nullopt;
+        }
+
+        // T_W_I = T_W_CL * inverse(T_I_CL)
+        const cv::Matx33d R_CL_I = R_I_CL.t();
+        const cv::Vec3d t_CL_I = -(R_CL_I * t_I_CL);
+        const cv::Matx33d R_W_I =
+            world_from_camera.rotation_world_from_camera * R_CL_I;
+        const cv::Vec3d t_W_I =
+            world_from_camera.translation_world_from_camera +
+            world_from_camera.rotation_world_from_camera * t_CL_I;
+
+        // T_W_B = T_W_I * T_I_B
+        const cv::Matx33d R_W_B = R_W_I * R_I_B;
+        const cv::Vec3d t_W_B = t_W_I + R_W_I * t_I_B;
+
+        if(!isFiniteRotation(R_W_B) ||
+           !isFiniteTranslation(t_W_B)){return std::nullopt;}
+
+        return VisualBodyPose{R_W_B, t_W_B};
+    }
+
+    std::optional<geometry_msgs::msg::Quaternion> VIONode::quaternionFromRotationMatrix(
+        const cv::Matx33d& rotation) const
+    {
+        constexpr double rotation_tolerance = 1e-3;
+
+        // A valid rotation matrix can only contain finite values. Checking this
+        // before doing matrix multiplication also prevents NaNs from hiding in
+        // the orthonormality and determinant checks below.
+        for(int row = 0; row < 3; ++row) {
+            for(int col = 0; col < 3; ++col) {
+                if(!std::isfinite(rotation(row, col))){return std::nullopt;}
+            }
+        }
+
+        // The columns of a rotation matrix are mutually perpendicular unit
+        // vectors. Therefore R^T * R must be the identity matrix. This catches
+        // scaling and shear before passing the matrix into tf2.
+        const cv::Matx33d rotation_transpose_times_rotation =
+            rotation.t() * rotation;
+        for(int row = 0; row < 3; ++row) {
+            for(int col = 0; col < 3; ++col) {
+                const double expected = row == col ? 1.0 : 0.0;
+                if(std::abs(rotation_transpose_times_rotation(row, col) - expected) >
+                   rotation_tolerance){return std::nullopt;}
+            }
+        }
+
+        // Orthonormal matrices can describe either a rotation or a reflection.
+        // A proper 3D rotation has determinant +1, while a reflection has -1.
+        const double determinant =
+            rotation(0, 0) * (rotation(1, 1) * rotation(2, 2) -
+                              rotation(1, 2) * rotation(2, 1)) -
+            rotation(0, 1) * (rotation(1, 0) * rotation(2, 2) -
+                              rotation(1, 2) * rotation(2, 0)) +
+            rotation(0, 2) * (rotation(1, 0) * rotation(2, 1) -
+                              rotation(1, 1) * rotation(2, 0));
+        if(!std::isfinite(determinant) ||
+           std::abs(determinant - 1.0) > rotation_tolerance){return std::nullopt;}
+
+        // tf2 uses the same row/column convention here: this matrix represents
+        // R_W_B, which maps vectors from the body frame into the world frame.
+        const tf2::Matrix3x3 tf_rotation(
+            rotation(0, 0), rotation(0, 1), rotation(0, 2),
+            rotation(1, 0), rotation(1, 1), rotation(1, 2),
+            rotation(2, 0), rotation(2, 1), rotation(2, 2));
+        tf2::Quaternion tf_quaternion;
+        tf_rotation.getRotation(tf_quaternion);
+
+        // Matrix-to-quaternion conversion should already return a unit
+        // quaternion. Normalize it explicitly so downstream ROS messages do
+        // not accumulate small floating-point errors from pose composition.
+        const double quaternion_norm = std::sqrt(
+            tf_quaternion.x() * tf_quaternion.x() +
+            tf_quaternion.y() * tf_quaternion.y() +
+            tf_quaternion.z() * tf_quaternion.z() +
+            tf_quaternion.w() * tf_quaternion.w());
+        if(!std::isfinite(quaternion_norm) ||
+           quaternion_norm <= 1e-12){return std::nullopt;}
+        tf_quaternion /= quaternion_norm;
+
+        geometry_msgs::msg::Quaternion output;
+        output.x = tf_quaternion.x();
+        output.y = tf_quaternion.y();
+        output.z = tf_quaternion.z();
+        output.w = tf_quaternion.w();
+
+        // Keep this final validation at the ROS-message boundary. It ensures a
+        // future caller can safely publish every quaternion returned here.
+        if(!std::isfinite(output.x) ||
+           !std::isfinite(output.y) ||
+           !std::isfinite(output.z) ||
+           !std::isfinite(output.w)){return std::nullopt;}
+
+        return output;
     }
 
     void VIONode::initParameters()
