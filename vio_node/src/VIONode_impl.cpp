@@ -1,4 +1,6 @@
 #include <vio_node/VIONode_impl.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <utility>
 
 namespace vio_node {
@@ -213,6 +215,56 @@ namespace vio_node {
         }
 
         return true;
+    }
+
+    std::optional<VisualCameraPose> VIONode::visualCameraPoseFromTransform(
+        const geometry_msgs::msg::TransformStamped& transform) const
+    {
+        // Validate all translation and quaternion components
+        const auto& translation = transform.transform.translation;
+        const auto& rotation = transform.transform.rotation;
+        if(!std::isfinite(translation.x) ||
+           !std::isfinite(translation.y) ||
+           !std::isfinite(translation.z) ||
+           !std::isfinite(rotation.x) ||
+           !std::isfinite(rotation.y) ||
+           !std::isfinite(rotation.z) ||
+           !std::isfinite(rotation.w)){return std::nullopt;}
+        // Normalize
+        const double quaternion_norm = std::sqrt(
+            rotation.x * rotation.x +
+            rotation.y * rotation.y +
+            rotation.z * rotation.z +
+            rotation.w * rotation.w);
+
+        if(!std::isfinite(quaternion_norm) ||
+            quaternion_norm <= 1e-12) {return std::nullopt;}
+        tf2::Quaternion quat(rotation.x, rotation.y, rotation.z, rotation.w);
+        quat /= quaternion_norm;
+
+        tf2::Matrix3x3 rotMat;
+        rotMat.setRotation(quat);
+        // Copy into cv Matrix
+        const cv::Matx33d cv_rotMat{rotMat[0][0], rotMat[0][1], rotMat[0][2],
+                                    rotMat[1][0], rotMat[1][1], rotMat[1][2],
+                                    rotMat[2][0], rotMat[2][1], rotMat[2][2]};
+        const cv::Vec3d cv_transl{translation.x, translation.y, translation.z};
+        // Validate output
+        bool rotation_is_finite = true;
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                rotation_is_finite &=
+                    std::isfinite(cv_rotMat(row, col));
+            }
+        }
+        const bool translation_is_finite =
+            std::isfinite(cv_transl[0]) &&
+            std::isfinite(cv_transl[1]) &&
+            std::isfinite(cv_transl[2]);
+
+        if (!rotation_is_finite || !translation_is_finite) {return std::nullopt;}
+        // Return pose
+        return VisualCameraPose{cv_rotMat, cv_transl};
     }
 
     void VIONode::initParameters()

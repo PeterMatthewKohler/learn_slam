@@ -127,7 +127,8 @@ namespace vio_node {
                                const std::string& expected_target,
                                const std::string& expected_source);
         bool validateStereoTransform(const geometry_msgs::msg::TransformStamped& left_from_right);
-
+        std::optional<VisualCameraPose> visualCameraPoseFromTransform(
+            const geometry_msgs::msg::TransformStamped& transform) const;
         // Internal states
         std::optional<sensor_msgs::msg::Imu> currentImu_;
         std::optional<rclcpp::Time> lastImuStamp_;
