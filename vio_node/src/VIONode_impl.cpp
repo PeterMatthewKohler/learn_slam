@@ -1,6 +1,7 @@
 #include <vio_node/VIONode_impl.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <iterator>
 #include <utility>
 
 namespace vio_node {
@@ -742,6 +743,86 @@ namespace vio_node {
             return std::nullopt;
         }
         return m;
+    }
+
+    std::optional<std::vector<ImuMeasurement>> VIONode::extractImuMeasurements(
+        const std::deque<sensor_msgs::msg::Imu>& buffer,
+        const rclcpp::Time& start_stamp,
+        const rclcpp::Time& end_stamp) const
+    {
+        // The interval itself must be valid before any timestamp subtraction or
+        // comparison is attempted. rclcpp throws if different clock types are
+        // compared, so clock validation must happen first.
+        if(start_stamp.get_clock_type() != end_stamp.get_clock_type() ||
+           buffer.size() < std::size_t(2)){return std::nullopt;}
+        if(end_stamp <= start_stamp){return std::nullopt;}
+        // This buffer stores the latest sample at the front and the oldest at
+        // the back. Both endpoints must be covered so interpolation never
+        // becomes extrapolation.
+        const rclcpp::Time oldest_stamp(buffer.back().header.stamp);
+        const rclcpp::Time newest_stamp(buffer.front().header.stamp);
+        if(oldest_stamp.get_clock_type() != start_stamp.get_clock_type() ||
+           newest_stamp.get_clock_type() != start_stamp.get_clock_type()){
+            return std::nullopt;
+        }
+        if(oldest_stamp > start_stamp || newest_stamp < end_stamp){
+            return std::nullopt;
+        }
+        // Reverse iteration visits the newest-first deque chronologically. Each
+        // adjacent pair describes one interval in which a boundary may fall.
+        std::vector<ImuMeasurement> measurements;
+        bool start_added = false;
+        auto before = buffer.rbegin();
+        auto after = std::next(before);
+        for(; after != buffer.rend(); ++before, ++after) {
+            const rclcpp::Time before_stamp(before->header.stamp);
+            const rclcpp::Time after_stamp(after->header.stamp);
+            // Enforce the deque's strictly increasing chronological invariant.
+            // The interpolation helper validates frames and numeric values when
+            // this pair contributes a measurement.
+            if(before_stamp.get_clock_type() != start_stamp.get_clock_type() ||
+               after_stamp.get_clock_type() != start_stamp.get_clock_type() ||
+               after_stamp <= before_stamp){return std::nullopt;}
+            // Add an interpolated measurement exactly at the beginning of the
+            // requested interval. Equality handles a boundary that already
+            // coincides with a raw IMU timestamp.
+            if(!start_added &&
+               before_stamp <= start_stamp &&
+               start_stamp <= after_stamp) {
+                const auto start_measurement =
+                    interpolateImuMeasurement(*before, *after, start_stamp);
+                if(!start_measurement){return std::nullopt;}
+                measurements.push_back(*start_measurement);
+                start_added = true;
+            }
+            if(!start_added){continue;}
+            // Preserve each raw sample strictly inside the interval. Calling
+            // the interpolation helper at after_stamp returns the exact raw
+            // value while keeping all validation and conversion in one place.
+            if(after_stamp > start_stamp && after_stamp < end_stamp) {
+                const auto interior_measurement =
+                    interpolateImuMeasurement(*before, *after, after_stamp);
+                if(!interior_measurement){return std::nullopt;}
+                measurements.push_back(*interior_measurement);
+            }
+            // Once this pair brackets the end, append the exact end boundary
+            // and finish. Since end_stamp is strictly newer than start_stamp,
+            // this cannot duplicate the first measurement.
+            if(before_stamp <= end_stamp && end_stamp <= after_stamp) {
+                const auto end_measurement =
+                    interpolateImuMeasurement(*before, *after, end_stamp);
+                if(!end_measurement){return std::nullopt;}
+                measurements.push_back(*end_measurement);
+
+                if(measurements.size() < std::size_t(2) ||
+                   measurements.front().stamp != start_stamp ||
+                   measurements.back().stamp != end_stamp){return std::nullopt;}
+                return measurements;
+            }
+        }
+        // Reaching the end means at least one requested boundary was not found,
+        // despite the coarse oldest/newest bracketing check above.
+        return std::nullopt;
     }
 
 }   // namespace vio_node

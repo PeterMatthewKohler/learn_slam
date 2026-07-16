@@ -73,7 +73,7 @@ namespace vio_node {
         std::shared_ptr<message_filters::Synchronizer<StereoSyncPolicy>> sync_;
         void stereoCallback(const sensor_msgs::msg::Image::ConstSharedPtr& left_msg,
                             const sensor_msgs::msg::Image::ConstSharedPtr& right_msg);
-
+        // --- CV ---
         void initializeRectification(const sensor_msgs::msg::CameraInfo& info,
                                      RectificationData& rect);
         void initializeStereoCalibration(const sensor_msgs::msg::CameraInfo& left_info,
@@ -122,13 +122,17 @@ namespace vio_node {
             const cv::Matx33d& rotation) const;
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
-        // IMU
+        // --- IMU ---
         std::optional<ImuMeasurement> interpolateImuMeasurement(
             const sensor_msgs::msg::Imu& before,
             const sensor_msgs::msg::Imu& after,
             const rclcpp::Time& target_stamp) const;
+        std::optional<std::vector<ImuMeasurement>> extractImuMeasurements(
+            const std::deque<sensor_msgs::msg::Imu>& buffer,
+            const rclcpp::Time& start_stamp,
+            const rclcpp::Time& end_stamp) const;
 
-        // TF2
+        // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
         void initTF();
