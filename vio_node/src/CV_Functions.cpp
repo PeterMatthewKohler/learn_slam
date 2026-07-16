@@ -149,9 +149,18 @@ namespace vio_node {
         const int max_features = 500;
         const int detect_every_n_frames = 5;
 
-        if(prev_left_rectified_.empty() || tracked_features_.empty()) {
+        const bool first_visual_frame = prev_left_rectified_.empty();
+        if(first_visual_frame || tracked_features_.empty()) {
             tracked_features_.clear();
+            // Init our visual pose if its our first frame
+            if(first_visual_frame) {
+                visualCameraPose_ = VisualCameraPose{};
+                visualPoseChainValid_ = true;
+            }
+            else {visualPoseChainValid_ = false;}
 
+
+            // Add new tracked features
             addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, max_features);
         }
         else {
@@ -171,7 +180,6 @@ namespace vio_node {
             // Calculate pose
             const auto pose = estimateRelativeVisualPose(selected, stereoCalib);
 
-            // ---------------- Diagnostic - TODO REMOVE -------------------
             if(!pose){
                 RCLCPP_WARN_STREAM_THROTTLE(
                     get_logger(),
@@ -179,6 +187,8 @@ namespace vio_node {
                     1000,
                     "Visual PnP failed - Candidate Count: " << correspondences.size()
                     << ", Selected Count: " << selected.size());
+
+                visualPoseChainValid_ = false;
             }
             else if(!passesVisualPoseQualityChecks(*pose)){
                 RCLCPP_WARN_STREAM_THROTTLE(
@@ -189,30 +199,53 @@ namespace vio_node {
                     << ", Inlier Ratio: " << pose->inlier_ratio
                     << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
                     << ", Median 3D Error(m): " << pose->median_3d_error_m);
-            }
-            else{
-                const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
-                const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
-                const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
 
-                RCLCPP_INFO_STREAM_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    1000,
-                    "Diagnostic output - Candidate Count: " << correspondences.size()
-                    << ", Selected Count: " << selected.size()
-                    << ", Inlier Count: " << pose->inlier_indices.size()
-                    << ", Inlier Ratio: " << pose->inlier_ratio
-                    << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
-                    << ", Median 3D Error(m): " << pose->median_3d_error_m
-                    << ", translation_curr_from_prev: ["
-                    << pose->translation_curr_from_prev[0] << ", "
-                    << pose->translation_curr_from_prev[1] << ", "
-                    << pose->translation_curr_from_prev[2] << "]"
-                    << ", Translation Norm: "
-                    << cv::norm(pose->translation_curr_from_prev)
-                    << ", Rotation Magnitude(deg) : " << angle_deg
-                );
+                visualPoseChainValid_ = false;
+            }
+            else{   // Relative visual pose valid
+                if(visualPoseChainValid_ && visualCameraPose_.has_value()) {
+                    // Perform pose composition
+                    const auto composed = composeVisualCameraPose(*visualCameraPose_, *pose);
+                    if(!composed){
+                        visualPoseChainValid_ = false;
+
+                        RCLCPP_WARN_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            1000,
+                            "Visual camera pose composition failed");
+                    }
+                    else{
+                        visualCameraPose_ = *composed;
+                        // ---- DEBUG STUFF ---
+                        const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
+                        const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+                        const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
+
+                        RCLCPP_INFO_STREAM_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            1000,
+                            "Diagnostic output - Candidate Count: " << correspondences.size()
+                            << ", Selected Count: " << selected.size()
+                            << ", Inlier Count: " << pose->inlier_indices.size()
+                            << ", Inlier Ratio: " << pose->inlier_ratio
+                            << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
+                            << ", Median 3D Error(m): " << pose->median_3d_error_m
+                            << ", translation_curr_from_prev: ["
+                            << pose->translation_curr_from_prev[0] << ", "
+                            << pose->translation_curr_from_prev[1] << ", "
+                            << pose->translation_curr_from_prev[2] << "]"
+                            << ", Translation Norm: "
+                            << cv::norm(pose->translation_curr_from_prev)
+                            << ", Rotation Magnitude(deg) : " << angle_deg
+                            << ", World Camera Translation: ["
+                            << visualCameraPose_->translation_world_from_camera[0] << ", "
+                            << visualCameraPose_->translation_world_from_camera[1] << ", "
+                            << visualCameraPose_->translation_world_from_camera[2] << "]"
+                        );
+                    }
+                }
             }
             // ---------------- TODO REMOVE END -------------------------
 

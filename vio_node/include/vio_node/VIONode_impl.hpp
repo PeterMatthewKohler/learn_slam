@@ -138,6 +138,8 @@ namespace vio_node {
         RectificationData rightRectMap_;
         StereoCalibration stereoCalib_;
         std::optional<nav_msgs::msg::Odometry> currentVIOOdom_;
+        std::optional<VisualCameraPose> visualCameraPose_;
+        bool visualPoseChainValid_ = false;
         // Stereo tracking
         cv::Mat prev_left_rectified_;
         std::vector<TrackedFeature> tracked_features_;
