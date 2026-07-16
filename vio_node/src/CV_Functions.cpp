@@ -178,8 +178,6 @@ namespace vio_node {
                 }
             }
             else {visualPoseChainValid_ = false;}
-
-
             // Add new tracked features
             addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, max_features);
         }
@@ -342,6 +340,123 @@ namespace vio_node {
                 }
             }
         }
+        // Connect IMU intervals to visual timestamps
+        // Verify buffer brackets visual stamp
+        std::deque<sensor_msgs::msg::Imu> buffer;
+        std::optional<rclcpp::Time> last_extraction_stamp;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            buffer = imuBuffer_;
+            last_extraction_stamp = lastImuExtractionStamp_;
+        }
+
+        if(buffer.size() < std::size_t(2)) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Waiting for at least two buffered IMU measurements"
+            );
+        }
+        else if(!last_extraction_stamp) {
+            const rclcpp::Time newest_imu_stamp(buffer.front().header.stamp);
+            const rclcpp::Time oldest_imu_stamp(buffer.back().header.stamp);
+            const bool clocks_match =
+                newest_imu_stamp.get_clock_type() == stamp.get_clock_type() &&
+                oldest_imu_stamp.get_clock_type() == stamp.get_clock_type();
+            const bool buffer_brackets_stamp = clocks_match &&
+                oldest_imu_stamp <= stamp && stamp <= newest_imu_stamp;
+
+            if(buffer_brackets_stamp) {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                lastImuExtractionStamp_.emplace(stamp);
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Initialized IMU extraction timestamp at %.9f s",
+                    stamp.seconds()
+                );
+            }
+            else {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "IMU buffer does not bracket visual timestamp %.9f s; buffer spans %.9f to %.9f s",
+                    stamp.seconds(),
+                    oldest_imu_stamp.seconds(),
+                    newest_imu_stamp.seconds()
+                );
+            }
+        }
+        else {
+            const auto imu_measurements =
+                extractImuMeasurements(buffer, *last_extraction_stamp, stamp);
+            if(!imu_measurements) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "IMU extraction from buffer from time %.9f s to %.9f s failed",
+                    last_extraction_stamp->seconds(),
+                    stamp.seconds()
+                );
+            }
+            else {
+                double summed_dt_s = 0.0;
+                bool timestamps_strictly_increasing = true;
+                for(std::size_t i = 1; i < imu_measurements->size(); ++i) {
+                    const double dt_s =
+                        ((*imu_measurements)[i].stamp -
+                         (*imu_measurements)[i - 1].stamp).seconds();
+                    if(!std::isfinite(dt_s) || dt_s <= 0.0) {
+                        timestamps_strictly_increasing = false;
+                        break;
+                    }
+                    summed_dt_s += dt_s;
+                }
+
+                const double interval_duration_s =
+                    (stamp - *last_extraction_stamp).seconds();
+                constexpr double duration_tolerance_s = 1e-9;
+                const bool interval_valid =
+                    timestamps_strictly_increasing &&
+                    imu_measurements->size() >= std::size_t(2) &&
+                    imu_measurements->front().stamp == *last_extraction_stamp &&
+                    imu_measurements->back().stamp == stamp &&
+                    std::isfinite(summed_dt_s) &&
+                    std::abs(summed_dt_s - interval_duration_s) <=
+                        duration_tolerance_s;
+
+                if(!interval_valid) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Extracted IMU interval failed timestamp validation"
+                    );
+                }
+                else {
+                    {
+                        std::lock_guard<std::mutex> lock(dataMutex_);
+                        lastImuExtractionStamp_.emplace(stamp);
+                    }
+
+                    RCLCPP_INFO_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "IMU interval: samples=%zu, duration=%.9f s, first=%.9f s, last=%.9f s, summed_dt=%.9f s",
+                        imu_measurements->size(),
+                        interval_duration_s,
+                        imu_measurements->front().stamp.seconds(),
+                        imu_measurements->back().stamp.seconds(),
+                        summed_dt_s
+                    );
+                }
+            }
+        }
+
         const bool should_publish_debug = publishDebugStereoFeatures_ &&
                                           debugStereoFeaturePub_ &&
                                           (frame_idx_ + 1) % 10 == 0;
