@@ -144,6 +144,8 @@ namespace vio_node {
             const rclcpp::Time& end_stamp) const;
         std::optional<ImuWindowStatistics> computeImuWindowStatistics(
             const std::vector<ImuMeasurement>& measurements) const;
+        bool isImuWindowStationary(
+            const ImuWindowStatistics& statistics) const;
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -206,6 +208,12 @@ namespace vio_node {
         double imuMsgGapThresholdS_;
         double imuMsgBufferWindowS_;
         double imuInitializationWindowS_;
+        std::size_t imuMinSamples_;
+        double imuStationaryMaxGyroMeanNormRadS_;
+        double imuStationaryMaxGyroStddevRadS_;
+        double imuStationaryAccelStddevMS2_;
+        double imuStationaryGravMagMS2_;
+        double imuStationaryGravTolMS2_;
     };
 
 }   // namespace vio_node

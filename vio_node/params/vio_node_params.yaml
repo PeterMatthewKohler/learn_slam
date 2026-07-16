@@ -17,3 +17,9 @@ vio_node:
     imu_msg_gap_threshold_s: 0.05
     imu_msg_buffer_window_s: 10.0
     imu_initialization_window_s: 2.0
+    imu_initialization_min_samples: 100
+    imu_stationary_max_gyro_mean_norm_rad_s: 0.005
+    imu_stationary_max_gyro_stddev_rad_s: 0.001
+    imu_stationary_max_accel_stddev_m_s2: 0.01
+    imu_stationary_gravity_magnitude_m_s2: 9.8
+    imu_stationary_gravity_tolerance_m_s2: 0.1

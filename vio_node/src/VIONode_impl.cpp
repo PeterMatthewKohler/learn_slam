@@ -476,6 +476,61 @@ namespace vio_node {
             throw std::invalid_argument(
                 "imu_initialization_window_s must be finite, positive, and no larger than imu_msg_buffer_window_s");
         }
+
+        this->declare_parameter("imu_initialization_min_samples", 100);
+        const auto imu_min_samples =
+            this->get_parameter("imu_initialization_min_samples").as_int();
+        if(imu_min_samples < 2) {
+            throw std::invalid_argument(
+                "imu_initialization_min_samples must be at least 2");
+        }
+        imuMinSamples_ = static_cast<std::size_t>(imu_min_samples);
+
+        this->declare_parameter("imu_stationary_max_gyro_mean_norm_rad_s", 0.005);
+        imuStationaryMaxGyroMeanNormRadS_ =
+            this->get_parameter("imu_stationary_max_gyro_mean_norm_rad_s").as_double();
+        if(!std::isfinite(imuStationaryMaxGyroMeanNormRadS_) ||
+           imuStationaryMaxGyroMeanNormRadS_ <= 0.0) {
+            throw std::invalid_argument(
+                "imu_stationary_max_gyro_mean_norm_rad_s must be finite and positive");
+        }
+
+        this->declare_parameter("imu_stationary_max_gyro_stddev_rad_s", 0.001);
+        imuStationaryMaxGyroStddevRadS_ =
+            this->get_parameter("imu_stationary_max_gyro_stddev_rad_s").as_double();
+        if(!std::isfinite(imuStationaryMaxGyroStddevRadS_) ||
+           imuStationaryMaxGyroStddevRadS_ <= 0.0) {
+            throw std::invalid_argument(
+                "imu_stationary_max_gyro_stddev_rad_s must be finite and positive");
+        }
+
+        this->declare_parameter("imu_stationary_max_accel_stddev_m_s2", 0.01);
+        imuStationaryAccelStddevMS2_ =
+            this->get_parameter("imu_stationary_max_accel_stddev_m_s2").as_double();
+        if(!std::isfinite(imuStationaryAccelStddevMS2_) ||
+           imuStationaryAccelStddevMS2_ <= 0.0) {
+            throw std::invalid_argument(
+                "imu_stationary_max_accel_stddev_m_s2 must be finite and positive");
+        }
+
+        this->declare_parameter("imu_stationary_gravity_magnitude_m_s2", 9.8);
+        imuStationaryGravMagMS2_ =
+            this->get_parameter("imu_stationary_gravity_magnitude_m_s2").as_double();
+        if(!std::isfinite(imuStationaryGravMagMS2_) ||
+           imuStationaryGravMagMS2_ <= 0.0) {
+            throw std::invalid_argument(
+                "imu_stationary_gravity_magnitude_m_s2 must be finite and positive");
+        }
+
+        this->declare_parameter("imu_stationary_gravity_tolerance_m_s2", 0.1);
+        imuStationaryGravTolMS2_ =
+            this->get_parameter("imu_stationary_gravity_tolerance_m_s2").as_double();
+        if(!std::isfinite(imuStationaryGravTolMS2_) ||
+           imuStationaryGravTolMS2_ <= 0.0 ||
+           imuStationaryGravTolMS2_ >= imuStationaryGravMagMS2_) {
+            throw std::invalid_argument(
+                "imu_stationary_gravity_tolerance_m_s2 must be finite, positive, and smaller than imu_stationary_gravity_magnitude_m_s2");
+        }
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
@@ -903,8 +958,16 @@ namespace vio_node {
            !statistics.linear_acceleration_stddev.allFinite()){
             return std::nullopt;
         }
-
         return statistics;
+    }
+    bool VIONode::isImuWindowStationary(
+        const ImuWindowStatistics& statistics) const
+    {
+        return statistics.sample_count >= imuMinSamples_ &&
+               statistics.angular_velocity_mean.norm() <= imuStationaryMaxGyroMeanNormRadS_ &&
+               statistics.angular_velocity_stddev.maxCoeff() <= imuStationaryMaxGyroStddevRadS_ &&
+               statistics.linear_acceleration_stddev.maxCoeff() <= imuStationaryAccelStddevMS2_ &&
+               std::abs(statistics.linear_acceleration_mean.norm() - imuStationaryGravMagMS2_) <= imuStationaryGravTolMS2_;
     }
 
 }   // namespace vio_node
