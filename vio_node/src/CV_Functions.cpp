@@ -492,12 +492,13 @@ namespace vio_node {
                         statistics->angular_velocity_mean.norm();
                     const double linear_acceleration_mean_norm =
                         statistics->linear_acceleration_mean.norm();
+                    const bool imu_window_stationary = isImuWindowStationary(*statistics);
 
                     RCLCPP_INFO_THROTTLE(
                         get_logger(),
                         *get_clock(),
                         2000,
-                        "IMU window stats: samples=%zu, duration=%.6f s, gyro_mean=[%.9f, %.9f, %.9f] rad/s, gyro_stddev=[%.9f, %.9f, %.9f] rad/s, gyro_mean_norm=%.9f rad/s, accel_mean=[%.9f, %.9f, %.9f] m/s^2, accel_stddev=[%.9f, %.9f, %.9f] m/s^2, accel_mean_norm=%.9f m/s^2",
+                        "IMU window stats: samples=%zu, duration=%.6f s, gyro_mean=[%.9f, %.9f, %.9f] rad/s, gyro_stddev=[%.9f, %.9f, %.9f] rad/s, gyro_mean_norm=%.9f rad/s, accel_mean=[%.9f, %.9f, %.9f] m/s^2, accel_stddev=[%.9f, %.9f, %.9f] m/s^2, accel_mean_norm=%.9f m/s^2, stationary=%s",
                         statistics->sample_count,
                         statistics->duration_s,
                         statistics->angular_velocity_mean.x(),
@@ -513,7 +514,8 @@ namespace vio_node {
                         statistics->linear_acceleration_stddev.x(),
                         statistics->linear_acceleration_stddev.y(),
                         statistics->linear_acceleration_stddev.z(),
-                        linear_acceleration_mean_norm
+                        linear_acceleration_mean_norm,
+                        imu_window_stationary ? "true" : "false"
                     );
                 }
             }
