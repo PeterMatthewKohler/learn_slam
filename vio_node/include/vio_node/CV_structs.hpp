@@ -88,6 +88,12 @@ namespace vio_node {
         double reprojection_rmse_px = 0.0;
         double median_3d_error_m = 0.0;
     };
+
+    struct VisualCameraPose {
+        cv::Matx33d rotation_world_from_camera = cv::Matx33d::eye();
+        cv::Vec3d translation_world_from_camera{0.0, 0.0, 0.0};
+    };
+
 }   // namespace vio_node
 
 #endif  // CV_STRUCTS_HPP

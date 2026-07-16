@@ -779,6 +779,54 @@ namespace vio_node {
         return true;
     }
 
+    std::optional<VisualCameraPose> VIONode::composeVisualCameraPose(
+        const VisualCameraPose& previous_pose,
+        const VisualPoseEstimate& relative_pose) const
+    {
+        // Helpers for validation
+        const auto isFiniteRotation = [](const cv::Matx33d& rotation) {
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    if (!std::isfinite(rotation(row, col))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+        const auto isFiniteTranslation = [](const cv::Vec3d& translation) {
+            return std::isfinite(translation[0]) &&
+                std::isfinite(translation[1]) &&
+                std::isfinite(translation[2]);
+        };
+
+        // Validate inputs.
+        if (!isFiniteRotation(relative_pose.rotation_curr_from_prev) ||
+            !isFiniteTranslation(relative_pose.translation_curr_from_prev) ||
+            !isFiniteRotation(previous_pose.rotation_world_from_camera) ||
+            !isFiniteTranslation(previous_pose.translation_world_from_camera)) {return std::nullopt;}
+
+        const cv::Matx33d R_Cprev_Ck = relative_pose.rotation_curr_from_prev.t();
+        const cv::Vec3d t_Cprev_Ck = -R_Cprev_Ck * relative_pose.translation_curr_from_prev;
+
+        // Validate the inverted transform before composition.
+        if (!isFiniteRotation(R_Cprev_Ck) ||
+            !isFiniteTranslation(t_Cprev_Ck)) {return std::nullopt;}
+
+        // Compose
+        const cv::Matx33d R_W_Ck =
+            previous_pose.rotation_world_from_camera * R_Cprev_Ck;
+        const cv::Vec3d t_W_Ck =
+            previous_pose.translation_world_from_camera +
+            previous_pose.rotation_world_from_camera * t_Cprev_Ck;
+
+        // Validate outputs.
+        if (!isFiniteRotation(R_W_Ck) ||
+            !isFiniteTranslation(t_W_Ck)) {return std::nullopt;}
+
+        return VisualCameraPose{R_W_Ck, t_W_Ck};
+    }
+
     cv::Mat VIONode::makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                  const std::vector<StereoFeature>& features)
     {

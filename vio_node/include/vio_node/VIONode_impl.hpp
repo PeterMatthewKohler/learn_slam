@@ -104,6 +104,9 @@ namespace vio_node {
             const std::vector<VisualCorrespondence>& correspondences,
             const StereoCalibration& calib) const;
         bool passesVisualPoseQualityChecks(const VisualPoseEstimate& estimate) const;
+        std::optional<VisualCameraPose> composeVisualCameraPose(
+            const VisualCameraPose& previous_pose,
+            const VisualPoseEstimate& relative_pose) const;
 
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
