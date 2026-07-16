@@ -154,8 +154,28 @@ namespace vio_node {
             tracked_features_.clear();
             // Init our visual pose if its our first frame
             if(first_visual_frame) {
-                visualCameraPose_ = VisualCameraPose{};
-                visualPoseChainValid_ = true;
+                std::optional<geometry_msgs::msg::TransformStamped> imu_from_left;
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex_);
+                    imu_from_left = imuFromLeftCamera_;
+                }
+                const auto initial_camera_pose = imu_from_left
+                    ? visualCameraPoseFromTransform(*imu_from_left)
+                    : std::nullopt;
+                if(initial_camera_pose) {
+                    visualCameraPose_ = *initial_camera_pose;
+                    visualPoseChainValid_ = true;
+                }
+                else {
+                    visualCameraPose_.reset();
+                    visualPoseChainValid_ = false;
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Failed to initialize visual pose from IMU -> left camera transform"
+                    );
+                }
             }
             else {visualPoseChainValid_ = false;}
 
