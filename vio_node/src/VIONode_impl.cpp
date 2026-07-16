@@ -698,4 +698,50 @@ namespace vio_node {
 
     }
 
+    std::optional<ImuMeasurement> VIONode::interpolateImuMeasurement(
+        const sensor_msgs::msg::Imu& before,
+        const sensor_msgs::msg::Imu& after,
+        const rclcpp::Time& target_stamp) const
+    {
+        // Validation
+        // Ensure all stamps have same clock type
+        rclcpp::Time beforeStamp(before.header.stamp);
+        rclcpp::Time afterStamp(after.header.stamp);
+        if(beforeStamp.get_clock_type() != afterStamp.get_clock_type() ||
+           beforeStamp.get_clock_type() != target_stamp.get_clock_type()){return std::nullopt;}
+
+        if(before.header.frame_id != imuFrameID_ || after.header.frame_id != imuFrameID_ ||
+           afterStamp <= beforeStamp || target_stamp < beforeStamp ||
+           target_stamp > afterStamp){return std::nullopt;}
+
+        const auto vector_is_finite = [](const geometry_msgs::msg::Vector3& v) {
+            return std::isfinite(v.x) &&
+                std::isfinite(v.y) &&
+                std::isfinite(v.z);
+        };
+        if(!vector_is_finite(before.angular_velocity) || !vector_is_finite(before.linear_acceleration) ||
+           !vector_is_finite(after.angular_velocity) || !vector_is_finite(after.linear_acceleration)){return std::nullopt;}
+
+        auto alpha = (target_stamp - beforeStamp).seconds() /
+                     (afterStamp - beforeStamp).seconds();
+        if(!std::isfinite(alpha) || alpha > 1.0 || alpha < 0.0){return std::nullopt;}
+        auto interpolate = [&alpha](double before_value, double after_value) {
+            return (1.0 - alpha) * before_value + alpha * after_value;
+        };
+
+        ImuMeasurement m;
+        m.stamp = target_stamp;
+        m.angular_velocity.x() = interpolate(before.angular_velocity.x, after.angular_velocity.x);
+        m.angular_velocity.y() = interpolate(before.angular_velocity.y, after.angular_velocity.y);
+        m.angular_velocity.z() = interpolate(before.angular_velocity.z, after.angular_velocity.z);
+        m.linear_acceleration.x() = interpolate(before.linear_acceleration.x, after.linear_acceleration.x);
+        m.linear_acceleration.y() = interpolate(before.linear_acceleration.y, after.linear_acceleration.y);
+        m.linear_acceleration.z() = interpolate(before.linear_acceleration.z, after.linear_acceleration.z);
+        if(!m.angular_velocity.allFinite() ||
+            !m.linear_acceleration.allFinite()) {
+            return std::nullopt;
+        }
+        return m;
+    }
+
 }   // namespace vio_node

@@ -38,6 +38,12 @@
 
 namespace vio_node {
 
+    struct ImuMeasurement {
+        rclcpp::Time stamp;
+        Eigen::Vector3d angular_velocity;
+        Eigen::Vector3d linear_acceleration;
+    };
+
     class VIONode : public rclcpp::Node
     {
         public:
@@ -114,9 +120,14 @@ namespace vio_node {
             const geometry_msgs::msg::TransformStamped& imu_from_body) const;
         std::optional<geometry_msgs::msg::Quaternion> quaternionFromRotationMatrix(
             const cv::Matx33d& rotation) const;
-
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
                                      const std::vector<StereoFeature>& features);
+        // IMU
+        std::optional<ImuMeasurement> interpolateImuMeasurement(
+            const sensor_msgs::msg::Imu& before,
+            const sensor_msgs::msg::Imu& after,
+            const rclcpp::Time& target_stamp) const;
+
         // TF2
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
