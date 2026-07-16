@@ -205,6 +205,7 @@ namespace vio_node {
         double cameraIMUTimeOffsetS_;
         double imuMsgGapThresholdS_;
         double imuMsgBufferWindowS_;
+        double imuInitializationWindowS_;
     };
 
 }   // namespace vio_node

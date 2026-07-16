@@ -16,3 +16,4 @@ vio_node:
     camera_imu_time_offset_sec: 0.0
     imu_msg_gap_threshold_s: 0.05
     imu_msg_buffer_window_s: 10.0
+    imu_initialization_window_s: 2.0

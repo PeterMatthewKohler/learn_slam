@@ -390,8 +390,7 @@ namespace vio_node {
             }
         }
         else {
-            const auto imu_measurements =
-                extractImuMeasurements(buffer, *last_extraction_stamp, stamp);
+            const auto imu_measurements = extractImuMeasurements(buffer, *last_extraction_stamp, stamp);
             if(!imu_measurements) {
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
@@ -452,6 +451,69 @@ namespace vio_node {
                         imu_measurements->front().stamp.seconds(),
                         imu_measurements->back().stamp.seconds(),
                         summed_dt_s
+                    );
+                }
+            }
+        }
+
+        // Compute initialization statistics from the latest complete IMU
+        // window. This is independent of whether the current visual timestamp
+        // was covered, so callback ordering cannot suppress data collection.
+        if(buffer.size() >= std::size_t(2)) {
+            const rclcpp::Time window_end(buffer.front().header.stamp);
+            const rclcpp::Time window_start =
+                window_end -
+                rclcpp::Duration::from_seconds(imuInitializationWindowS_);
+            const auto window_measurements =
+                extractImuMeasurements(buffer, window_start, window_end);
+
+            if(!window_measurements) {
+                RCLCPP_INFO_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    2000,
+                    "Waiting for a complete %.3f s IMU statistics window",
+                    imuInitializationWindowS_
+                );
+            }
+            else {
+                const auto statistics =
+                    computeImuWindowStatistics(*window_measurements);
+                if(!statistics) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        2000,
+                        "Failed to compute IMU window statistics"
+                    );
+                }
+                else {
+                    const double angular_velocity_mean_norm =
+                        statistics->angular_velocity_mean.norm();
+                    const double linear_acceleration_mean_norm =
+                        statistics->linear_acceleration_mean.norm();
+
+                    RCLCPP_INFO_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        2000,
+                        "IMU window stats: samples=%zu, duration=%.6f s, gyro_mean=[%.9f, %.9f, %.9f] rad/s, gyro_stddev=[%.9f, %.9f, %.9f] rad/s, gyro_mean_norm=%.9f rad/s, accel_mean=[%.9f, %.9f, %.9f] m/s^2, accel_stddev=[%.9f, %.9f, %.9f] m/s^2, accel_mean_norm=%.9f m/s^2",
+                        statistics->sample_count,
+                        statistics->duration_s,
+                        statistics->angular_velocity_mean.x(),
+                        statistics->angular_velocity_mean.y(),
+                        statistics->angular_velocity_mean.z(),
+                        statistics->angular_velocity_stddev.x(),
+                        statistics->angular_velocity_stddev.y(),
+                        statistics->angular_velocity_stddev.z(),
+                        angular_velocity_mean_norm,
+                        statistics->linear_acceleration_mean.x(),
+                        statistics->linear_acceleration_mean.y(),
+                        statistics->linear_acceleration_mean.z(),
+                        statistics->linear_acceleration_stddev.x(),
+                        statistics->linear_acceleration_stddev.y(),
+                        statistics->linear_acceleration_stddev.z(),
+                        linear_acceleration_mean_norm
                     );
                 }
             }

@@ -467,6 +467,15 @@ namespace vio_node {
         imuMsgBufferWindowS_ = this->get_parameter("imu_msg_buffer_window_s").as_double();
         if (!std::isfinite(imuMsgBufferWindowS_) ||
             imuMsgBufferWindowS_ <= 0) {throw std::invalid_argument("imu_msg_buffer_window_s must be finite and positive");}
+
+        this->declare_parameter("imu_initialization_window_s", 2.0);
+        imuInitializationWindowS_ = this->get_parameter("imu_initialization_window_s").as_double();
+        if (!std::isfinite(imuInitializationWindowS_) ||
+            imuInitializationWindowS_ <= 0 ||
+            imuInitializationWindowS_ > imuMsgBufferWindowS_) {
+            throw std::invalid_argument(
+                "imu_initialization_window_s must be finite, positive, and no larger than imu_msg_buffer_window_s");
+        }
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
