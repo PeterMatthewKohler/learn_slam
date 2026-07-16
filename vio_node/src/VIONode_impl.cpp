@@ -825,4 +825,77 @@ namespace vio_node {
         return std::nullopt;
     }
 
+    std::optional<ImuWindowStatistics> VIONode::computeImuWindowStatistics(
+        const std::vector<ImuMeasurement>& measurements) const
+    {
+        if(measurements.size() < std::size_t(2)){return std::nullopt;}
+
+        const auto clock_type = measurements.front().stamp.get_clock_type();
+        Eigen::Vector3d angular_velocity_mean = Eigen::Vector3d::Zero();
+        Eigen::Vector3d angular_velocity_m2 = Eigen::Vector3d::Zero();
+        Eigen::Vector3d linear_acceleration_mean = Eigen::Vector3d::Zero();
+        Eigen::Vector3d linear_acceleration_m2 = Eigen::Vector3d::Zero();
+
+        // Welford's algorithm updates the mean and the sum of squared
+        // deviations in one pass. M2/(N-1) is the per-axis sample variance.
+        std::size_t sample_count = 0;
+        for(std::size_t i = 0; i < measurements.size(); ++i) {
+            const auto& measurement = measurements[i];
+            if(measurement.stamp.get_clock_type() != clock_type ||
+               !measurement.angular_velocity.allFinite() ||
+               !measurement.linear_acceleration.allFinite()){return std::nullopt;}
+
+            if(i > 0 && measurement.stamp <= measurements[i - 1].stamp){return std::nullopt;}
+
+            ++sample_count;
+            const double count = static_cast<double>(sample_count);
+
+            const Eigen::Vector3d angular_delta =
+                measurement.angular_velocity - angular_velocity_mean;
+            angular_velocity_mean += angular_delta / count;
+            const Eigen::Vector3d angular_delta_from_updated_mean =
+                measurement.angular_velocity - angular_velocity_mean;
+            angular_velocity_m2 += angular_delta.cwiseProduct(
+                angular_delta_from_updated_mean);
+
+            const Eigen::Vector3d acceleration_delta =
+                measurement.linear_acceleration - linear_acceleration_mean;
+            linear_acceleration_mean += acceleration_delta / count;
+            const Eigen::Vector3d acceleration_delta_from_updated_mean =
+                measurement.linear_acceleration - linear_acceleration_mean;
+            linear_acceleration_m2 += acceleration_delta.cwiseProduct(
+                acceleration_delta_from_updated_mean);
+        }
+
+        const double duration_s = (measurements.back().stamp - measurements.front().stamp).seconds();
+        if(!std::isfinite(duration_s) || duration_s <= 0.0){return std::nullopt;}
+
+        const double sample_variance_denominator = static_cast<double>(sample_count - 1);
+        // M2 should be nonnegative. Clamp tiny negative roundoff before taking
+        // the component-wise square root.
+        const Eigen::Vector3d angular_velocity_variance =
+            (angular_velocity_m2 / sample_variance_denominator).cwiseMax(0.0);
+        const Eigen::Vector3d linear_acceleration_variance =
+            (linear_acceleration_m2 / sample_variance_denominator).cwiseMax(0.0);
+
+        ImuWindowStatistics statistics;
+        statistics.sample_count = sample_count;
+        statistics.duration_s = duration_s;
+        statistics.angular_velocity_mean = angular_velocity_mean;
+        statistics.angular_velocity_stddev =
+            angular_velocity_variance.cwiseSqrt();
+        statistics.linear_acceleration_mean = linear_acceleration_mean;
+        statistics.linear_acceleration_stddev =
+            linear_acceleration_variance.cwiseSqrt();
+
+        if(!statistics.angular_velocity_mean.allFinite() ||
+           !statistics.angular_velocity_stddev.allFinite() ||
+           !statistics.linear_acceleration_mean.allFinite() ||
+           !statistics.linear_acceleration_stddev.allFinite()){
+            return std::nullopt;
+        }
+
+        return statistics;
+    }
+
 }   // namespace vio_node

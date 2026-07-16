@@ -44,6 +44,17 @@ namespace vio_node {
         Eigen::Vector3d linear_acceleration;
     };
 
+    struct ImuWindowStatistics {
+        std::size_t sample_count;
+        double duration_s;
+
+        Eigen::Vector3d angular_velocity_mean;
+        Eigen::Vector3d angular_velocity_stddev;
+
+        Eigen::Vector3d linear_acceleration_mean;
+        Eigen::Vector3d linear_acceleration_stddev;
+    };
+
     class VIONode : public rclcpp::Node
     {
         public:
@@ -131,6 +142,8 @@ namespace vio_node {
             const std::deque<sensor_msgs::msg::Imu>& buffer,
             const rclcpp::Time& start_stamp,
             const rclcpp::Time& end_stamp) const;
+        std::optional<ImuWindowStatistics> computeImuWindowStatistics(
+            const std::vector<ImuMeasurement>& measurements) const;
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
