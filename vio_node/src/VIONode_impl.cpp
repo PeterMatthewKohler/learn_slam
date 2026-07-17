@@ -1140,4 +1140,26 @@ namespace vio_node {
 
         return next;
     }
+
+    std::optional<EstimatorState> VIONode::propagateEstimatorStateThroughMeasurements(
+        const EstimatorState& initial_state,
+        const std::vector<ImuMeasurement>& measurements,
+        const Eigen::Vector3d& gravity_world) const
+    {
+        // Validate(atleast 2 measurements and starting point is initial state)
+        if(measurements.size() < std::size_t(2) ||
+           measurements.front().stamp != initial_state.stamp){return std::nullopt;}
+        // Propagate state through measurements
+        EstimatorState prop_state = initial_state;
+        for(std::size_t i = 1; i < measurements.size(); i++) {
+            const auto next_state = propagateEstimatorState(prop_state,
+                                                            measurements[i-1],
+                                                            measurements[i],
+                                                            gravity_world);
+            if(!next_state){return std::nullopt;}
+            prop_state = *next_state;
+        }
+        if(prop_state.stamp != measurements.back().stamp){return std::nullopt;}
+        return prop_state;
+    }
 }   // namespace vio_node
