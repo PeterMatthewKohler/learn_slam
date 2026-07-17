@@ -459,12 +459,24 @@ namespace vio_node {
         // Compute initialization statistics from the latest complete IMU
         // window. This is independent of whether the current visual timestamp
         // was covered, so callback ordering cannot suppress data collection.
-        std::optional<ImuInitialization> imuInit;
+        bool initialization_needed = false;
+        bool initialization_state_consistent = false;
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
-            imuInit = imuInitialization_;
+            initialization_state_consistent =
+                imuInitialization_.has_value() == estimatorState_.has_value();
+            initialization_needed =
+                !imuInitialization_.has_value() && !estimatorState_.has_value();
         }
-        if(!imuInit && buffer.size() >= std::size_t(2)) {
+        if(!initialization_state_consistent) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "IMU initialization and estimator state are inconsistent"
+            );
+        }
+        else if(initialization_needed && buffer.size() >= std::size_t(2)) {
             const rclcpp::Time window_end(buffer.front().header.stamp);
             const rclcpp::Time window_start = window_end - rclcpp::Duration::from_seconds(imuInitializationWindowS_);
             const auto window_measurements = extractImuMeasurements(buffer, window_start, window_end);
@@ -497,7 +509,9 @@ namespace vio_node {
                     const bool imu_window_stationary = isImuWindowStationary(*statistics);
 
                     bool initialization_stored = false;
+                    bool inconsistent_state_detected = false;
                     std::optional<ImuInitialization> initialization;
+                    std::optional<EstimatorState> initial_state;
                     if(imu_window_stationary) {
                         initialization = computeImuInitialization(*statistics, window_end);
                         if(!initialization) {
@@ -509,12 +523,45 @@ namespace vio_node {
                             );
                         }
                         else {
-                            std::lock_guard<std::mutex> lock(dataMutex_);
-                            if(!imuInitialization_) {
-                                imuInitialization_ = *initialization;
-                                initialization_stored = true;
+                            initial_state = makeInitialEstimatorState(*initialization);
+                            if(initial_state) {
+                                if(initial_state->stamp != initialization->stamp) {
+                                    RCLCPP_ERROR(
+                                        get_logger(),
+                                        "Initial estimator state timestamp does not match IMU initialization timestamp"
+                                    );
+                                }
+                                else {
+                                    std::lock_guard<std::mutex> lock(dataMutex_);
+                                    if(imuInitialization_.has_value() !=
+                                       estimatorState_.has_value()) {
+                                        inconsistent_state_detected = true;
+                                    }
+                                    else if(!imuInitialization_ && !estimatorState_) {
+                                        imuInitialization_ = *initialization;
+                                        estimatorState_ = *initial_state;
+                                        initialization_stored = true;
+                                    }
+                                }
+                            }
+                            else {
+                                RCLCPP_WARN_THROTTLE(
+                                    get_logger(),
+                                    *get_clock(),
+                                    2000,
+                                    "Failed to create estimator initialization from IMU initialization."
+                                );
                             }
                         }
+                    }
+
+                    if(inconsistent_state_detected) {
+                        RCLCPP_ERROR_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            2000,
+                            "Cannot store initialization because IMU initialization and estimator state are inconsistent"
+                        );
                     }
 
                     if(initialization_stored) {
@@ -524,7 +571,7 @@ namespace vio_node {
 
                         RCLCPP_INFO(
                             get_logger(),
-                            "IMU initialization accepted at %.9f s: gyro_bias=[%.9f, %.9f, %.9f] rad/s, accel_bias=[%.9f, %.9f, %.9f] m/s^2, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], gravity_world=[%.9f, %.9f, %.9f] m/s^2, aligned_specific_force=[%.9f, %.9f, %.9f] m/s^2",
+                            "IMU initialization accepted at %.9f s: gyro_bias=[%.9f, %.9f, %.9f] rad/s, accel_bias=[%.9f, %.9f, %.9f] m/s^2, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], gravity_world=[%.9f, %.9f, %.9f] m/s^2, aligned_specific_force=[%.9f, %.9f, %.9f] m/s^2, initial_position_world_imu=[%.9f, %.9f, %.9f] m, initial_velocity_world_imu=[%.9f, %.9f, %.9f] m/s, state_stamp=%.9f s, timestamps_match=%s",
                             initialization->stamp.seconds(),
                             initialization->gyroscope_bias.x(),
                             initialization->gyroscope_bias.y(),
@@ -541,7 +588,17 @@ namespace vio_node {
                             initialization->gravity_world.z(),
                             aligned_specific_force.x(),
                             aligned_specific_force.y(),
-                            aligned_specific_force.z()
+                            aligned_specific_force.z(),
+                            initial_state->position_world_imu.x(),
+                            initial_state->position_world_imu.y(),
+                            initial_state->position_world_imu.z(),
+                            initial_state->velocity_world_imu.x(),
+                            initial_state->velocity_world_imu.y(),
+                            initial_state->velocity_world_imu.z(),
+                            initial_state->stamp.seconds(),
+                            initial_state->stamp == initialization->stamp
+                                ? "true"
+                                : "false"
                         );
                     }
 
