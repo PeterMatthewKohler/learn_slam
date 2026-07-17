@@ -185,6 +185,7 @@ namespace vio_node {
             const geometry_msgs::msg::TransformStamped& transform) const;
         // Internal states
         std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
+        std::optional<ImuInitialization> imuInitialization_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;

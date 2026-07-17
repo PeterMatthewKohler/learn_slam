@@ -382,7 +382,7 @@ namespace vio_node {
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "IMU buffer does not bracket visual timestamp %.9f s; buffer spans %.9f to %.9f s",
+                    "IMU buffer does not bracket visual timestamp %.9fs; buffer spans %.9f to %.9fs",
                     stamp.seconds(),
                     oldest_imu_stamp.seconds(),
                     newest_imu_stamp.seconds()
@@ -459,13 +459,15 @@ namespace vio_node {
         // Compute initialization statistics from the latest complete IMU
         // window. This is independent of whether the current visual timestamp
         // was covered, so callback ordering cannot suppress data collection.
-        if(buffer.size() >= std::size_t(2)) {
+        std::optional<ImuInitialization> imuInit;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            imuInit = imuInitialization_;
+        }
+        if(!imuInit && buffer.size() >= std::size_t(2)) {
             const rclcpp::Time window_end(buffer.front().header.stamp);
-            const rclcpp::Time window_start =
-                window_end -
-                rclcpp::Duration::from_seconds(imuInitializationWindowS_);
-            const auto window_measurements =
-                extractImuMeasurements(buffer, window_start, window_end);
+            const rclcpp::Time window_start = window_end - rclcpp::Duration::from_seconds(imuInitializationWindowS_);
+            const auto window_measurements = extractImuMeasurements(buffer, window_start, window_end);
 
             if(!window_measurements) {
                 RCLCPP_INFO_THROTTLE(
@@ -493,6 +495,55 @@ namespace vio_node {
                     const double linear_acceleration_mean_norm =
                         statistics->linear_acceleration_mean.norm();
                     const bool imu_window_stationary = isImuWindowStationary(*statistics);
+
+                    bool initialization_stored = false;
+                    std::optional<ImuInitialization> initialization;
+                    if(imu_window_stationary) {
+                        initialization = computeImuInitialization(*statistics, window_end);
+                        if(!initialization) {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                2000,
+                                "Failed to compute IMU initialization from a stationary window"
+                            );
+                        }
+                        else {
+                            std::lock_guard<std::mutex> lock(dataMutex_);
+                            if(!imuInitialization_) {
+                                imuInitialization_ = *initialization;
+                                initialization_stored = true;
+                            }
+                        }
+                    }
+
+                    if(initialization_stored) {
+                        const Eigen::Vector3d aligned_specific_force =
+                            initialization->world_from_imu *
+                            statistics->linear_acceleration_mean;
+
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "IMU initialization accepted at %.9f s: gyro_bias=[%.9f, %.9f, %.9f] rad/s, accel_bias=[%.9f, %.9f, %.9f] m/s^2, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], gravity_world=[%.9f, %.9f, %.9f] m/s^2, aligned_specific_force=[%.9f, %.9f, %.9f] m/s^2",
+                            initialization->stamp.seconds(),
+                            initialization->gyroscope_bias.x(),
+                            initialization->gyroscope_bias.y(),
+                            initialization->gyroscope_bias.z(),
+                            initialization->accelerometer_bias.x(),
+                            initialization->accelerometer_bias.y(),
+                            initialization->accelerometer_bias.z(),
+                            initialization->world_from_imu.x(),
+                            initialization->world_from_imu.y(),
+                            initialization->world_from_imu.z(),
+                            initialization->world_from_imu.w(),
+                            initialization->gravity_world.x(),
+                            initialization->gravity_world.y(),
+                            initialization->gravity_world.z(),
+                            aligned_specific_force.x(),
+                            aligned_specific_force.y(),
+                            aligned_specific_force.z()
+                        );
+                    }
 
                     RCLCPP_INFO_THROTTLE(
                         get_logger(),
