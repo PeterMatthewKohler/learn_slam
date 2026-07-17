@@ -38,7 +38,7 @@
 #include <deque>
 
 namespace vio_node {
-
+    // IMU Structs
     struct ImuMeasurement {
         rclcpp::Time stamp;
         Eigen::Vector3d angular_velocity;
@@ -62,6 +62,17 @@ namespace vio_node {
         Eigen::Vector3d accelerometer_bias;
         Eigen::Quaterniond world_from_imu;
         Eigen::Vector3d gravity_world;
+    };
+    // Estimator Structs
+    struct EstimatorState {
+        rclcpp::Time stamp;
+
+        Eigen::Vector3d position_world_imu;
+        Eigen::Quaterniond world_from_imu;
+        Eigen::Vector3d velocity_world_imu;
+
+        Eigen::Vector3d gyroscope_bias;
+        Eigen::Vector3d accelerometer_bias;
     };
 
     class VIONode : public rclcpp::Node
@@ -158,7 +169,9 @@ namespace vio_node {
         std::optional<ImuInitialization> computeImuInitialization(
             const ImuWindowStatistics& statistics,
             const rclcpp::Time& initialization_stamp) const;
-
+        // --- Estimator ---
+        std::optional<EstimatorState> makeInitialEstimatorState(
+            const ImuInitialization& initialization) const;
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -186,6 +199,7 @@ namespace vio_node {
         // Internal states
         std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
         std::optional<ImuInitialization> imuInitialization_;
+        std::optional<EstimatorState> estimatorState_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;

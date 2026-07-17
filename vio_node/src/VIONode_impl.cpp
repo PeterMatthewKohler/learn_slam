@@ -1002,4 +1002,31 @@ namespace vio_node {
         return init;
     }
 
+    std::optional<EstimatorState> VIONode::makeInitialEstimatorState(
+        const ImuInitialization& initialization) const
+    {
+        // Validation
+        const auto vector_is_finite = [](const Eigen::Vector3d& v) {
+            return std::isfinite(v.x()) &&
+                std::isfinite(v.y()) &&
+                std::isfinite(v.z());
+        };
+        if(!vector_is_finite(initialization.gyroscope_bias) ||
+           !vector_is_finite(initialization.accelerometer_bias) ||
+           !vector_is_finite(initialization.gravity_world) ||
+           !initialization.world_from_imu.coeffs().allFinite()){return std::nullopt;}
+        const auto squared_norm = initialization.world_from_imu.squaredNorm();
+        if(!std::isfinite(squared_norm) ||
+            std::abs(squared_norm - 1.0) > 1e-6) {return std::nullopt;}
+        // Build state from init
+        EstimatorState state;
+        state.stamp = initialization.stamp;
+        state.position_world_imu = Eigen::Vector3d::Zero();
+        state.world_from_imu = initialization.world_from_imu;
+        state.velocity_world_imu = Eigen::Vector3d::Zero();
+
+        state.gyroscope_bias = initialization.gyroscope_bias;
+        state.accelerometer_bias = initialization.accelerometer_bias;
+        return state;
+    }
 }   // namespace vio_node
