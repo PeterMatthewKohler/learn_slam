@@ -1029,4 +1029,115 @@ namespace vio_node {
         state.accelerometer_bias = initialization.accelerometer_bias;
         return state;
     }
+
+    std::optional<EstimatorState> VIONode::propagateEstimatorState(
+        const EstimatorState& state,
+        const ImuMeasurement& start_measurement,
+        const ImuMeasurement& end_measurement,
+        const Eigen::Vector3d& gravity_world) const
+    {
+        const auto vector_is_finite = [](const Eigen::Vector3d& v) {
+            return std::isfinite(v.x()) &&
+                std::isfinite(v.y()) &&
+                std::isfinite(v.z());
+        };
+
+        // Validate timestamp ordering and require the first measurement to
+        // begin exactly at the current estimator state.
+        if(state.stamp.get_clock_type() != start_measurement.stamp.get_clock_type() ||
+           state.stamp.get_clock_type() != end_measurement.stamp.get_clock_type() ||
+           state.stamp != start_measurement.stamp ||
+           start_measurement.stamp >= end_measurement.stamp){return std::nullopt;}
+
+        const double dt_s =
+            (end_measurement.stamp - start_measurement.stamp).seconds();
+        if(!std::isfinite(dt_s) ||
+           dt_s <= 0.0 ||
+           dt_s > imuMsgGapThresholdS_){return std::nullopt;}
+
+        // Validate every state and measurement value used by propagation.
+        if(!vector_is_finite(state.position_world_imu) ||
+           !vector_is_finite(state.velocity_world_imu) ||
+           !vector_is_finite(state.gyroscope_bias) ||
+           !vector_is_finite(state.accelerometer_bias) ||
+           !state.world_from_imu.coeffs().allFinite() ||
+           !vector_is_finite(start_measurement.angular_velocity) ||
+           !vector_is_finite(start_measurement.linear_acceleration) ||
+           !vector_is_finite(end_measurement.angular_velocity) ||
+           !vector_is_finite(end_measurement.linear_acceleration) ||
+           !vector_is_finite(gravity_world)){return std::nullopt;}
+
+        const double state_quaternion_squared_norm =
+            state.world_from_imu.squaredNorm();
+        if(!std::isfinite(state_quaternion_squared_norm) ||
+           std::abs(state_quaternion_squared_norm - 1.0) > 1e-6){return std::nullopt;}
+
+        EstimatorState next;
+        next.stamp = end_measurement.stamp;
+        next.gyroscope_bias = state.gyroscope_bias;
+        next.accelerometer_bias = state.accelerometer_bias;
+
+        // Use bias-corrected mid-point angular velocity
+        const Eigen::Vector3d angular_velocity_mid = 0.5 * (start_measurement.angular_velocity +
+                                                     end_measurement.angular_velocity) -
+                                                     state.gyroscope_bias;
+        const Eigen::Vector3d delta_angle = angular_velocity_mid * dt_s;
+        if(!vector_is_finite(angular_velocity_mid) ||
+           !vector_is_finite(delta_angle)){return std::nullopt;}
+
+        // Calc delta_q
+        Eigen::Quaterniond delta_q;
+        const double angle = delta_angle.norm();
+        if(!std::isfinite(angle)){return std::nullopt;}
+        if(angle < 1e-8) {
+            delta_q = Eigen::Quaterniond(1.0,
+                                         0.5 * delta_angle.x(),
+                                         0.5 * delta_angle.y(),
+                                         0.5 * delta_angle.z());
+            delta_q.normalize();
+        }
+        else {delta_q = Eigen::Quaterniond(Eigen::AngleAxisd(angle, delta_angle / angle));}
+
+        if(!delta_q.coeffs().allFinite() ||
+           !std::isfinite(delta_q.squaredNorm()) ||
+           delta_q.squaredNorm() < 1e-12){return std::nullopt;}
+        delta_q.normalize();
+
+        // Orientation update
+        Eigen::Quaterniond q_next = state.world_from_imu * delta_q;
+        if(!q_next.coeffs().allFinite() ||
+           !std::isfinite(q_next.squaredNorm()) ||
+           q_next.squaredNorm() < 1e-12){return std::nullopt;}
+        q_next.normalize();
+        next.world_from_imu = q_next;
+
+        // Acceleration
+        const Eigen::Vector3d accel_start_world = state.world_from_imu *
+                                                    (start_measurement.linear_acceleration -
+                                                     state.accelerometer_bias) + gravity_world;
+        const Eigen::Vector3d accel_end_world = q_next * (end_measurement.linear_acceleration -
+                                                          state.accelerometer_bias) + gravity_world;
+        const Eigen::Vector3d accel_mid_world = 0.5 * (accel_start_world + accel_end_world);
+        if(!vector_is_finite(accel_start_world) ||
+           !vector_is_finite(accel_end_world) ||
+           !vector_is_finite(accel_mid_world)){return std::nullopt;}
+
+        // Position and velocity using classical physics equations
+        next.position_world_imu = state.position_world_imu + state.velocity_world_imu * dt_s +
+                                    0.5 * accel_mid_world * dt_s * dt_s;
+
+        next.velocity_world_imu = state.velocity_world_imu + accel_mid_world * dt_s;
+
+        const double output_quaternion_squared_norm =
+            next.world_from_imu.squaredNorm();
+        if(!vector_is_finite(next.position_world_imu) ||
+           !vector_is_finite(next.velocity_world_imu) ||
+           !vector_is_finite(next.gyroscope_bias) ||
+           !vector_is_finite(next.accelerometer_bias) ||
+           !next.world_from_imu.coeffs().allFinite() ||
+           !std::isfinite(output_quaternion_squared_norm) ||
+           std::abs(output_quaternion_squared_norm - 1.0) > 1e-6){return std::nullopt;}
+
+        return next;
+    }
 }   // namespace vio_node

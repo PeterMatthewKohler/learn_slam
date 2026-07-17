@@ -58,6 +58,7 @@ namespace vio_node {
 
     struct ImuInitialization {
         rclcpp::Time stamp;
+
         Eigen::Vector3d gyroscope_bias;
         Eigen::Vector3d accelerometer_bias;
         Eigen::Quaterniond world_from_imu;
@@ -172,6 +173,11 @@ namespace vio_node {
         // --- Estimator ---
         std::optional<EstimatorState> makeInitialEstimatorState(
             const ImuInitialization& initialization) const;
+        std::optional<EstimatorState> propagateEstimatorState(
+            const EstimatorState& state,
+            const ImuMeasurement& start_measurement,
+            const ImuMeasurement& end_measurement,
+            const Eigen::Vector3d& gravity_world) const;
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
