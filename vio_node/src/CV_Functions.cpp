@@ -235,101 +235,9 @@ namespace vio_node {
                     }
                     else{
                         visualCameraPose_ = *composed;
-                        std::optional<geometry_msgs::msg::TransformStamped> imu_from_left;
-                        std::optional<geometry_msgs::msg::TransformStamped> imu_from_body;
-                        {
-                            std::lock_guard<std::mutex> lock(dataMutex_);
-                            imu_from_left = imuFromLeftCamera_;
-                            imu_from_body = imuFromBody_;
-                        }
-                        const auto body_pose = imu_from_left && imu_from_body
-                            ? visualBodyPoseFromCameraPose(
-                                *visualCameraPose_,
-                                *imu_from_left,
-                                *imu_from_body)
-                            : std::nullopt;
-                        const auto body_orientation = body_pose
-                            ? quaternionFromRotationMatrix(
-                                body_pose->rotation_world_from_body)
-                            : std::nullopt;
-                        if(!body_pose) {
-                            RCLCPP_WARN_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Failed to derive visual body pose from camera pose and extrinsics"
-                            );
-                        }
-                        else if(!body_orientation) {
-                            RCLCPP_WARN_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Failed to convert visual body rotation to a quaternion"
-                            );
-                        }
-                        else {
-                            // ---- DEBUG STUFF ---
-                            const double trace = pose->rotation_curr_from_prev(0, 0) + pose->rotation_curr_from_prev(1, 1) + pose->rotation_curr_from_prev(2, 2);
-                            const double cos_angle = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
-                            const double angle_deg = std::acos(cos_angle) * 180.0 / CV_PI;
-
-                            // Extract absolute yaw from the normalized R_W_B
-                            // quaternion using the standard ZYX convention.
-                            // Positive yaw is a counter-clockwise turn around
-                            // the world's +Z axis under ROS REP-103 axes.
-                            const double sin_yaw = 2.0 *
-                                (body_orientation->w * body_orientation->z +
-                                 body_orientation->x * body_orientation->y);
-                            const double cos_yaw = 1.0 - 2.0 *
-                                (body_orientation->y * body_orientation->y +
-                                 body_orientation->z * body_orientation->z);
-                            const double body_yaw_deg =
-                                std::atan2(sin_yaw, cos_yaw) * 180.0 / CV_PI;
-                            const double body_quaternion_norm = std::sqrt(
-                                body_orientation->x * body_orientation->x +
-                                body_orientation->y * body_orientation->y +
-                                body_orientation->z * body_orientation->z +
-                                body_orientation->w * body_orientation->w);
-
-                            RCLCPP_INFO_STREAM_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Diagnostic output - Candidate Count: " << correspondences.size()
-                                << ", Selected Count: " << selected.size()
-                                << ", Inlier Count: " << pose->inlier_indices.size()
-                                << ", Inlier Ratio: " << pose->inlier_ratio
-                                << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
-                                << ", Median 3D Error(m): " << pose->median_3d_error_m
-                                << ", translation_curr_from_prev: ["
-                                << pose->translation_curr_from_prev[0] << ", "
-                                << pose->translation_curr_from_prev[1] << ", "
-                                << pose->translation_curr_from_prev[2] << "]"
-                                << ", Translation Norm: "
-                                << cv::norm(pose->translation_curr_from_prev)
-                                << ", Rotation Magnitude(deg) : " << angle_deg
-                                << ", World Camera Translation: ["
-                                << visualCameraPose_->translation_world_from_camera[0] << ", "
-                                << visualCameraPose_->translation_world_from_camera[1] << ", "
-                                << visualCameraPose_->translation_world_from_camera[2] << "]"
-                                << ", World Body Translation: ["
-                                << body_pose->translation_world_from_body[0] << ", "
-                                << body_pose->translation_world_from_body[1] << ", "
-                                << body_pose->translation_world_from_body[2] << "]"
-                                << ", World Body Quaternion(xyzw): ["
-                                << body_orientation->x << ", "
-                                << body_orientation->y << ", "
-                                << body_orientation->z << ", "
-                                << body_orientation->w << "]"
-                                << ", Quaternion Norm: " << body_quaternion_norm
-                                << ", World Body Yaw(deg): " << body_yaw_deg
-                            );
-                        }
                     }
                 }
             }
-            // ---------------- TODO REMOVE END -------------------------
 
             const bool should_add_new = tracked_features_.size() < static_cast<std::size_t>(min_features) ||
                                         frame_idx_ % detect_every_n_frames == 0;
@@ -340,118 +248,147 @@ namespace vio_node {
                 }
             }
         }
-        // Connect IMU intervals to visual timestamps
-        // Verify buffer brackets visual stamp
+        // Propagate the nominal estimator state to the current visual
+        // timestamp. Work from snapshots so failures cannot partially update
+        // shared estimator state.
         std::deque<sensor_msgs::msg::Imu> buffer;
-        std::optional<rclcpp::Time> last_extraction_stamp;
+        std::optional<EstimatorState> current_state;
+        std::optional<ImuInitialization> imu_initialization;
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             buffer = imuBuffer_;
-            last_extraction_stamp = lastImuExtractionStamp_;
+            current_state = estimatorState_;
+            imu_initialization = imuInitialization_;
         }
 
-        if(buffer.size() < std::size_t(2)) {
-            RCLCPP_WARN_THROTTLE(
+        if(buffer.size() >= std::size_t(2) &&
+           current_state.has_value() != imu_initialization.has_value()) {
+            RCLCPP_ERROR_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 1000,
-                "Waiting for at least two buffered IMU measurements"
+                "Cannot propagate inconsistent IMU initialization and estimator state"
             );
         }
-        else if(!last_extraction_stamp) {
-            const rclcpp::Time newest_imu_stamp(buffer.front().header.stamp);
-            const rclcpp::Time oldest_imu_stamp(buffer.back().header.stamp);
-            const bool clocks_match =
-                newest_imu_stamp.get_clock_type() == stamp.get_clock_type() &&
-                oldest_imu_stamp.get_clock_type() == stamp.get_clock_type();
-            const bool buffer_brackets_stamp = clocks_match &&
-                oldest_imu_stamp <= stamp && stamp <= newest_imu_stamp;
-
-            if(buffer_brackets_stamp) {
-                std::lock_guard<std::mutex> lock(dataMutex_);
-                lastImuExtractionStamp_.emplace(stamp);
-
-                RCLCPP_INFO(
-                    get_logger(),
-                    "Initialized IMU extraction timestamp at %.9f s",
-                    stamp.seconds()
-                );
-            }
-            else {
-                RCLCPP_WARN_THROTTLE(
+        else if(buffer.size() >= std::size_t(2) &&
+                current_state && imu_initialization) {
+            if(current_state->stamp.get_clock_type() != stamp.get_clock_type()) {
+                RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "IMU buffer does not bracket visual timestamp %.9fs; buffer spans %.9f to %.9fs",
-                    stamp.seconds(),
-                    oldest_imu_stamp.seconds(),
-                    newest_imu_stamp.seconds()
+                    "Estimator state and visual timestamp use different ROS clocks"
                 );
             }
-        }
-        else {
-            const auto imu_measurements = extractImuMeasurements(buffer, *last_extraction_stamp, stamp);
-            if(!imu_measurements) {
-                RCLCPP_WARN_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    1000,
-                    "IMU extraction from buffer from time %.9f s to %.9f s failed",
-                    last_extraction_stamp->seconds(),
-                    stamp.seconds()
+            else if(stamp > current_state->stamp) {
+                const auto imu_measurements = extractImuMeasurements(
+                    buffer,
+                    current_state->stamp,
+                    stamp
                 );
-            }
-            else {
-                double summed_dt_s = 0.0;
-                bool timestamps_strictly_increasing = true;
-                for(std::size_t i = 1; i < imu_measurements->size(); ++i) {
-                    const double dt_s =
-                        ((*imu_measurements)[i].stamp -
-                         (*imu_measurements)[i - 1].stamp).seconds();
-                    if(!std::isfinite(dt_s) || dt_s <= 0.0) {
-                        timestamps_strictly_increasing = false;
-                        break;
-                    }
-                    summed_dt_s += dt_s;
-                }
-
-                const double interval_duration_s =
-                    (stamp - *last_extraction_stamp).seconds();
-                constexpr double duration_tolerance_s = 1e-9;
-                const bool interval_valid =
-                    timestamps_strictly_increasing &&
-                    imu_measurements->size() >= std::size_t(2) &&
-                    imu_measurements->front().stamp == *last_extraction_stamp &&
-                    imu_measurements->back().stamp == stamp &&
-                    std::isfinite(summed_dt_s) &&
-                    std::abs(summed_dt_s - interval_duration_s) <=
-                        duration_tolerance_s;
-
-                if(!interval_valid) {
+                if(!imu_measurements) {
                     RCLCPP_WARN_THROTTLE(
                         get_logger(),
                         *get_clock(),
                         1000,
-                        "Extracted IMU interval failed timestamp validation"
+                        "IMU extraction from buffer from time %.9f s to %.9f s failed",
+                        current_state->stamp.seconds(),
+                        stamp.seconds()
                     );
                 }
                 else {
-                    {
-                        std::lock_guard<std::mutex> lock(dataMutex_);
-                        lastImuExtractionStamp_.emplace(stamp);
-                    }
+                    const auto propagated_state =
+                        propagateEstimatorStateThroughMeasurements(
+                            *current_state,
+                            *imu_measurements,
+                            imu_initialization->gravity_world
+                        );
 
-                    RCLCPP_INFO_THROTTLE(
-                        get_logger(),
-                        *get_clock(),
-                        1000,
-                        "IMU interval: samples=%zu, duration=%.9f s, first=%.9f s, last=%.9f s, summed_dt=%.9f s",
-                        imu_measurements->size(),
-                        interval_duration_s,
-                        imu_measurements->front().stamp.seconds(),
-                        imu_measurements->back().stamp.seconds(),
-                        summed_dt_s
-                    );
+                    if(!propagated_state) {
+                        RCLCPP_WARN_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            1000,
+                            "Estimator propagation from %.9f s to %.9f s failed",
+                            current_state->stamp.seconds(),
+                            stamp.seconds()
+                        );
+                    }
+                    else if(propagated_state->stamp != stamp) {
+                        RCLCPP_ERROR_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            1000,
+                            "Propagated estimator state did not reach visual timestamp"
+                        );
+                    }
+                    else {
+                        bool propagation_stored = false;
+                        bool inconsistent_state_detected = false;
+                        bool stale_snapshot_detected = false;
+                        {
+                            std::lock_guard<std::mutex> lock(dataMutex_);
+                            if(imuInitialization_.has_value() !=
+                               estimatorState_.has_value() ||
+                               !imuInitialization_ ||
+                               !estimatorState_) {
+                                inconsistent_state_detected = true;
+                            }
+                            else if(estimatorState_->stamp != current_state->stamp) {
+                                stale_snapshot_detected = true;
+                            }
+                            else {
+                                estimatorState_ = *propagated_state;
+                                propagation_stored = true;
+                            }
+                        }
+
+                        if(inconsistent_state_detected) {
+                            RCLCPP_ERROR_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Cannot store propagated state because estimator initialization is inconsistent"
+                            );
+                        }
+                        else if(stale_snapshot_detected) {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Discarded propagated state because estimator state advanced concurrently"
+                            );
+                        }
+
+                        if(propagation_stored) {
+                            const double interval_duration_s =
+                                (imu_measurements->back().stamp -
+                                 imu_measurements->front().stamp).seconds();
+                            const double quaternion_norm =
+                                propagated_state->world_from_imu.norm();
+
+                            RCLCPP_DEBUG_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Estimator propagation: samples=%zu, duration=%.9f s, state_stamp=%.9f s, position_world_imu=[%.9f, %.9f, %.9f] m, velocity_world_imu=[%.9f, %.9f, %.9f] m/s, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], quaternion_norm=%.9f",
+                                imu_measurements->size(),
+                                interval_duration_s,
+                                propagated_state->stamp.seconds(),
+                                propagated_state->position_world_imu.x(),
+                                propagated_state->position_world_imu.y(),
+                                propagated_state->position_world_imu.z(),
+                                propagated_state->velocity_world_imu.x(),
+                                propagated_state->velocity_world_imu.y(),
+                                propagated_state->velocity_world_imu.z(),
+                                propagated_state->world_from_imu.x(),
+                                propagated_state->world_from_imu.y(),
+                                propagated_state->world_from_imu.z(),
+                                propagated_state->world_from_imu.w(),
+                                quaternion_norm
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -502,10 +439,6 @@ namespace vio_node {
                     );
                 }
                 else {
-                    const double angular_velocity_mean_norm =
-                        statistics->angular_velocity_mean.norm();
-                    const double linear_acceleration_mean_norm =
-                        statistics->linear_acceleration_mean.norm();
                     const bool imu_window_stationary = isImuWindowStationary(*statistics);
 
                     bool initialization_stored = false;
@@ -602,29 +535,20 @@ namespace vio_node {
                         );
                     }
 
-                    RCLCPP_INFO_THROTTLE(
-                        get_logger(),
-                        *get_clock(),
-                        2000,
-                        "IMU window stats: samples=%zu, duration=%.6f s, gyro_mean=[%.9f, %.9f, %.9f] rad/s, gyro_stddev=[%.9f, %.9f, %.9f] rad/s, gyro_mean_norm=%.9f rad/s, accel_mean=[%.9f, %.9f, %.9f] m/s^2, accel_stddev=[%.9f, %.9f, %.9f] m/s^2, accel_mean_norm=%.9f m/s^2, stationary=%s",
-                        statistics->sample_count,
-                        statistics->duration_s,
-                        statistics->angular_velocity_mean.x(),
-                        statistics->angular_velocity_mean.y(),
-                        statistics->angular_velocity_mean.z(),
-                        statistics->angular_velocity_stddev.x(),
-                        statistics->angular_velocity_stddev.y(),
-                        statistics->angular_velocity_stddev.z(),
-                        angular_velocity_mean_norm,
-                        statistics->linear_acceleration_mean.x(),
-                        statistics->linear_acceleration_mean.y(),
-                        statistics->linear_acceleration_mean.z(),
-                        statistics->linear_acceleration_stddev.x(),
-                        statistics->linear_acceleration_stddev.y(),
-                        statistics->linear_acceleration_stddev.z(),
-                        linear_acceleration_mean_norm,
-                        imu_window_stationary ? "true" : "false"
-                    );
+                    if(!imu_window_stationary) {
+                        RCLCPP_INFO_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            2000,
+                            "Waiting for stationary IMU window: samples=%zu, gyro_mean_norm=%.6f rad/s, gyro_stddev_max=%.6f rad/s, accel_stddev_max=%.6f m/s^2, gravity_error=%.6f m/s^2",
+                            statistics->sample_count,
+                            statistics->angular_velocity_mean.norm(),
+                            statistics->angular_velocity_stddev.maxCoeff(),
+                            statistics->linear_acceleration_stddev.maxCoeff(),
+                            std::abs(statistics->linear_acceleration_mean.norm() -
+                                     imuStationaryGravMagMS2_)
+                        );
+                    }
                 }
             }
         }

@@ -213,7 +213,6 @@ namespace vio_node {
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;
-        std::optional<rclcpp::Time> lastImuExtractionStamp_;
         RectificationData leftRectMap_;
         RectificationData rightRectMap_;
         StereoCalibration stereoCalib_;
