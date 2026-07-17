@@ -19,6 +19,7 @@
 #include "tf2_ros/transform_listener.h"
 // Eigen
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 // OpenCV
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -53,6 +54,14 @@ namespace vio_node {
 
         Eigen::Vector3d linear_acceleration_mean;
         Eigen::Vector3d linear_acceleration_stddev;
+    };
+
+    struct ImuInitialization {
+        rclcpp::Time stamp;
+        Eigen::Vector3d gyroscope_bias;
+        Eigen::Vector3d accelerometer_bias;
+        Eigen::Quaterniond world_from_imu;
+        Eigen::Vector3d gravity_world;
     };
 
     class VIONode : public rclcpp::Node
@@ -146,6 +155,10 @@ namespace vio_node {
             const std::vector<ImuMeasurement>& measurements) const;
         bool isImuWindowStationary(
             const ImuWindowStatistics& statistics) const;
+        std::optional<ImuInitialization> computeImuInitialization(
+            const ImuWindowStatistics& statistics,
+            const rclcpp::Time& initialization_stamp) const;
+
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

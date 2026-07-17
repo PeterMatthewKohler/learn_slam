@@ -970,4 +970,36 @@ namespace vio_node {
                std::abs(statistics.linear_acceleration_mean.norm() - imuStationaryGravMagMS2_) <= imuStationaryGravTolMS2_;
     }
 
+    std::optional<ImuInitialization> VIONode::computeImuInitialization(
+        const ImuWindowStatistics& statistics,
+        const rclcpp::Time& initialization_stamp) const
+    {
+        // Reject window unless imu is stationary
+        if(!isImuWindowStationary(statistics)){return std::nullopt;}
+        ImuInitialization init;
+        init.stamp = initialization_stamp;
+        init.gyroscope_bias = statistics.angular_velocity_mean;
+        init.accelerometer_bias = Eigen::Vector3d::Zero();    // single stationary orientation cannot distinguish accelerometer bias from tilt
+        // Compute roll and pitch from normalized mean acceleration
+        const Eigen::Vector3d measured_up = statistics.linear_acceleration_mean.normalized();
+        const double roll = std::atan2(measured_up.y(), measured_up.z());
+        const double pitch = std::atan2(-measured_up.x(), std::hypot(measured_up.y(), measured_up.z()));
+        // Construct Rotation IMU->World
+        Eigen::Quaterniond world_from_imu =
+            Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+        // Normalize and validate quaternion
+        if (!world_from_imu.coeffs().allFinite()) {return std::nullopt;}
+        const double squared_norm = world_from_imu.squaredNorm();
+        // Prevent normalization of a zero or numerically tiny quaternion.
+        if (!std::isfinite(squared_norm) ||
+            squared_norm < 1e-12) {return std::nullopt;}
+        world_from_imu.normalize();
+        if(!world_from_imu.coeffs().allFinite() ||
+           std::abs(world_from_imu.squaredNorm() - 1.0) > 1e-6){return std::nullopt;}
+        init.world_from_imu = world_from_imu;
+        init.gravity_world = Eigen::Vector3d(0.0, 0.0, -imuStationaryGravMagMS2_);
+        return init;
+    }
+
 }   // namespace vio_node
