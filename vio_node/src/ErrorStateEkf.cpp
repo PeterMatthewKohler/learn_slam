@@ -31,6 +31,17 @@ namespace {
             -vector.y(), vector.x(),   0.0;
         return skew;
     }
+
+    bool validErrorStateCovariance(const vio_node::ErrorStateCovariance& covariance)
+    {
+        if(!covariance.allFinite() ||
+           !covariance.isApprox(covariance.transpose(), 1e-12)) {
+            return false;
+        }
+        const Eigen::LLT<vio_node::ErrorStateCovariance> covariance_llt(covariance);
+        // Validates covariance finiteness, symmetry, and positive definiteness
+        return covariance_llt.info() == Eigen::Success;
+    }
 }  // namespace
 
 namespace vio_node::error_state_ekf {
@@ -45,15 +56,7 @@ namespace vio_node::error_state_ekf {
             return false;
         }
 
-        const ErrorStateCovariance& covariance = filter_state.covariance;
-        if(!covariance.allFinite() ||
-           !covariance.isApprox(covariance.transpose(), 1e-12)) {
-            return false;
-        }
-
-        const Eigen::LLT<ErrorStateCovariance> covariance_llt(covariance);
-        // Validates covariance finiteness, symmetry, and positive definiteness
-        return covariance_llt.info() == Eigen::Success;
+        return validErrorStateCovariance(filter_state.covariance);
     }
 
     std::optional<FilterState> makeInitialFilterState(
@@ -230,6 +233,27 @@ namespace vio_node::error_state_ekf {
         model.transition = Phi;
         model.process_covariance = Qd;
         return model;
+    }
+
+    std::optional<ErrorStateCovariance> propagateErrorStateCovariance(
+        const ErrorStateCovariance& covariance,
+        const DiscreteErrorStateModel& model)
+    {
+        // Validate input covariance
+        if(!validErrorStateCovariance(covariance)){return std::nullopt;}
+        // Validate model transition matrix is finite
+        if(!model.transition.allFinite()){return std::nullopt;}
+        // Validate process covariance is finite and symmetric
+        if(!model.process_covariance.allFinite() ||
+           !model.process_covariance.isApprox(model.process_covariance.transpose())){return std::nullopt;}
+        // Propagate covariance using input model
+        ErrorStateCovariance prop_covariance = model.transition * covariance *
+                                                model.transition.transpose() + model.process_covariance;
+        // Enforce numerical symmetry
+        prop_covariance = 0.5 * (prop_covariance + prop_covariance.transpose());
+        // Validate and return
+        if(!validErrorStateCovariance(prop_covariance)){return std::nullopt;}
+        return prop_covariance;
     }
 
 }  // namespace vio_node::error_state_ekf

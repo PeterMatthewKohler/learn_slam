@@ -25,6 +25,10 @@ namespace vio_node::error_state_ekf {
         const ErrorStateLinearization& linearization,
         double dt_s);
 
+    std::optional<ErrorStateCovariance> propagateErrorStateCovariance(
+        const ErrorStateCovariance& covariance,
+        const DiscreteErrorStateModel& model);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP
