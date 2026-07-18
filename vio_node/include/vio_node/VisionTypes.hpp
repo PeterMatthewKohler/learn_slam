@@ -1,5 +1,7 @@
-#ifndef CV_STRUCTS_HPP
-#define CV_STRUCTS_HPP
+#ifndef VISION_TYPES_HPP
+#define VISION_TYPES_HPP
+
+#include <rclcpp/time.hpp>
 
 #include <opencv2/core.hpp>
 #include <cstddef>
@@ -94,11 +96,11 @@ namespace vio_node {
         cv::Vec3d translation_world_from_camera{0.0, 0.0, 0.0};
     };
 
-    struct VisualBodyPose {
-        cv::Matx33d rotation_world_from_body = cv::Matx33d::eye();
-        cv::Vec3d translation_world_from_body{0.0, 0.0, 0.0};
+    struct VisualPoseChain {
+        VisualCameraPose camera_pose;
+        rclcpp::Time stamp;
     };
 
 }   // namespace vio_node
 
-#endif  // CV_STRUCTS_HPP
+#endif  // VISION_TYPES_HPP

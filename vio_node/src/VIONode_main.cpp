@@ -1,4 +1,4 @@
-#include "vio_node/VIONode_impl.hpp"
+#include "vio_node/VIONode.hpp"
 #include <cstdio>
 
 int main(int argc, char** argv)

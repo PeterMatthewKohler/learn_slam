@@ -2,12 +2,11 @@
 <package format="3">
   <name>vio_node</name>
   <version>0.0.0</version>
-  <description>Publishes odometry using Visual Inertial Odometery algorithm</description>
+  <description>Learning-focused stereo visual-inertial odometry node</description>
   <maintainer email="pmkohler@gmail.com">peter</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclcpp</depend>
-  <depend>rclcpp_components</depend>
   <depend>ament_cmake_auto</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>

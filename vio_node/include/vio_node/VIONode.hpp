@@ -1,5 +1,5 @@
-#ifndef VIO_NODE_IMPL_H
-#define VIO_NODE_IMPL_H
+#ifndef VIO_NODE_HPP
+#define VIO_NODE_HPP
 
 // ROS
 #include <rclcpp/rclcpp.hpp>
@@ -7,92 +7,32 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/image_encodings.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 // TF2
-#include "tf2/exceptions.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 // Eigen
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#include <Eigen/StdVector>
 // OpenCV
-#include <opencv2/opencv.hpp>
-#include <cv_bridge/cv_bridge.h>
-#include "vio_node/CV_structs.hpp"
-// #include <opencv2/imgproc.hpp>
-// #include <opencv2/highgui.hpp>
-// #include <opencv2/imgcodecs.hpp>
+#include <opencv2/core.hpp>
+#include "vio_node/EstimatorTypes.hpp"
+#include "vio_node/ImuTypes.hpp"
+#include "vio_node/VisionTypes.hpp"
 // C++ Includes
-#include <cmath>
+#include <cstddef>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
-#include <chrono>
-#include <stdexcept>
-#include <deque>
 
 namespace vio_node {
-    // IMU Structs
-    struct ImuMeasurement {
-        rclcpp::Time stamp;
-        Eigen::Vector3d angular_velocity;
-        Eigen::Vector3d linear_acceleration;
-    };
-
-    struct ImuWindowStatistics {
-        std::size_t sample_count;
-        double duration_s;
-
-        Eigen::Vector3d angular_velocity_mean;
-        Eigen::Vector3d angular_velocity_stddev;
-
-        Eigen::Vector3d linear_acceleration_mean;
-        Eigen::Vector3d linear_acceleration_stddev;
-    };
-
-    struct ImuInitialization {
-        rclcpp::Time stamp;
-
-        Eigen::Vector3d gyroscope_bias;
-        Eigen::Vector3d accelerometer_bias;
-        Eigen::Quaterniond world_from_imu;
-        Eigen::Vector3d gravity_world;
-    };
-    // Estimator Structs
-    struct EstimatorState {
-        rclcpp::Time stamp;
-
-        Eigen::Vector3d position_world_imu;
-        Eigen::Quaterniond world_from_imu;
-        Eigen::Vector3d velocity_world_imu;
-
-        Eigen::Vector3d gyroscope_bias;
-        Eigen::Vector3d accelerometer_bias;
-    };
-
-    struct VisualPoseMeasurement {
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-        rclcpp::Time stamp;
-
-        Eigen::Vector3d position_world_imu;
-        Eigen::Quaterniond world_from_imu;
-
-        // Residual order: [position, orientation error].
-        Eigen::Matrix<double, 6, 6> covariance;
-    };
-
-    using VisualPoseMeasurementQueue = std::deque<
-        VisualPoseMeasurement,
-        Eigen::aligned_allocator<VisualPoseMeasurement>>;
-
     class VIONode : public rclcpp::Node
     {
         public:
@@ -163,10 +103,6 @@ namespace vio_node {
         std::optional<VisualCameraPose> composeVisualCameraPose(
             const VisualCameraPose& previous_pose,
             const VisualPoseEstimate& relative_pose) const;
-        std::optional<VisualBodyPose> visualBodyPoseFromCameraPose(
-            const VisualCameraPose& world_from_camera,
-            const geometry_msgs::msg::TransformStamped& imu_from_camera,
-            const geometry_msgs::msg::TransformStamped& imu_from_body) const;
         std::optional<geometry_msgs::msg::Quaternion> quaternionFromRotationMatrix(
             const cv::Matx33d& rotation) const;
         cv::Mat makeStereoDebugImage(const cv::Mat& leftRectImg, const cv::Mat& rightRectImg,
@@ -211,6 +147,7 @@ namespace vio_node {
         bool enqueueVisualPoseMeasurement(
             const VisualPoseMeasurement& measurement);
         void processPendingVisualMeasurements();
+        void tryInitializeEstimator(const rclcpp::Time& visual_stamp);
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -221,7 +158,6 @@ namespace vio_node {
                              const std::string& sensor_name);
         rclcpp::TimerBase::SharedPtr extrinsicsInitTimer_;
         std::optional<geometry_msgs::msg::TransformStamped> imuFromLeftCamera_; // T_I_CL
-        std::optional<geometry_msgs::msg::TransformStamped> imuFromRightCamera_; // T_I_CR
         std::optional<geometry_msgs::msg::TransformStamped> imuFromBody_; // T_I_B
         bool extrinsicsInitialized_ = false;
         double tfStereoBaselineM_ = 0.0;
@@ -234,19 +170,14 @@ namespace vio_node {
                                cv::Vec3d& translation_target_from_source) const;
         // Internal states
         std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
-        std::optional<ImuInitialization> imuInitialization_;
-        std::optional<rclcpp::Time> visualCameraPoseStamp_;
-        std::optional<EstimatorState> estimatorState_;
-        VisualPoseMeasurementQueue pendingVisualMeasurements_;
+        std::optional<EstimatorContext> estimatorContext_;
+        std::optional<VisualPoseChain> visualPoseChain_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;
         RectificationData leftRectMap_;
         RectificationData rightRectMap_;
         StereoCalibration stereoCalib_;
-        std::optional<nav_msgs::msg::Odometry> currentVIOOdom_;
-        std::optional<VisualCameraPose> visualCameraPose_;
-        bool visualPoseChainValid_ = false;
         // Stereo tracking
         cv::Mat prev_left_rectified_;
         std::vector<TrackedFeature> tracked_features_;
@@ -285,4 +216,4 @@ namespace vio_node {
     };
 
 }   // namespace vio_node
-# endif // VIO_NODE_IMPL_H
+#endif  // VIO_NODE_HPP

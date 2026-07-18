@@ -62,8 +62,10 @@ The fixed transforms required by the estimator are:
 - `T_I_CR`: right camera into IMU
 - `T_I_B`: body into IMU
 
-These transforms should be retrieved after TF becomes available and then cached,
-because the sensor mounting geometry does not change at runtime.
+These transforms are retrieved after TF becomes available. `T_I_CL` and
+`T_I_B` are cached because they are used by the estimator. `T_I_CR` is needed
+only while validating the stereo mounting geometry and baseline, so it is not
+kept as persistent node state.
 
 ### Camera Frame Validation
 
@@ -190,6 +192,29 @@ header.stamp    = estimator state timestamp
 Pose and twist covariance will come from the estimator rather than fixed values.
 TF publication remains disabled while the ground-truth TF tree owns `base_link`.
 
+## Code Organization
+
+The ROS node owns subscriptions, publishers, configuration, and synchronized
+state. Sensor processing and estimator math are separated by responsibility:
+
+- `VIONode.hpp`: node interface and shared runtime state ownership.
+- `VIONode.cpp`: construction, subscriptions, and ROS callbacks.
+- `Parameters.cpp`: parameter declaration and validation.
+- `Transforms.cpp`: TF retrieval, frame validation, and transform conversion.
+- `StereoFrontend.cpp`: rectification, feature detection, optical flow, stereo
+  matching, and debug-image rendering.
+- `VisualOdometry.cpp`: correspondence selection, PnP pose estimation, pose
+  quality checks, and visual pose composition.
+- `ImuProcessing.cpp`: IMU interpolation, interval extraction, statistics, and
+  stationary initialization math.
+- `EstimatorInitialization.cpp`: atomic estimator/visual-anchor initialization.
+- `EstimatorBackend.cpp`: nominal-state propagation and queued visual
+  measurement handoff.
+- `VisionTypes.hpp`, `ImuTypes.hpp`, and `EstimatorTypes.hpp`: domain-specific
+  data structures.
+- `Validation.hpp`: shared finite-value, quaternion, rotation, and timestamp
+  validation helpers.
+
 ## Development Roadmap
 
 1. Define and enforce the frame, transform, timestamp, initialization, and output
@@ -210,7 +235,8 @@ Completed:
 - Removed ground-truth odometry from the estimator input path.
 - Added explicit TF ownership and camera/IMU time-offset parameters.
 - Initialized the TF2 buffer and listener.
-- Retrieved and cached `T_I_CL`, `T_I_CR`, and `T_I_B`.
+- Retrieved and validated `T_I_CL`, `T_I_CR`, and `T_I_B`; cached the transforms
+  required during estimation.
 - Verified the camera optical axes, identity rectification, and horizontal
   `0.150 m` stereo geometry.
 - Added strict frame-ID validation for IMU, image, and `CameraInfo` messages.
