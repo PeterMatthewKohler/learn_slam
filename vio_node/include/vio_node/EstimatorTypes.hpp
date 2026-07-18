@@ -115,6 +115,16 @@ namespace vio_node {
         ContinuousImuNoiseCovariance noise_covariance;
     };
 
+    using ErrorStateTransitionMatrix =
+        Eigen::Matrix<double, error_state::state_size, error_state::state_size>;
+
+    struct DiscreteErrorStateModel {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        ErrorStateTransitionMatrix transition;
+        ErrorStateCovariance process_covariance;
+    };
+
 }  // namespace vio_node
 
 #endif  // ESTIMATOR_TYPES_HPP

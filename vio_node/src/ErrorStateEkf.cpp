@@ -140,7 +140,7 @@ namespace vio_node::error_state_ekf {
            !validation::isFinite(angular_velocity_unbiased_imu) ||
            !validation::isFinite(specific_force_unbiased_imu) ||
            !validateImuNoiseParameters(noise_parameters)){return std::nullopt;}
-        // F matrix
+        // F - Dynamics
         ErrorStateDynamicsMatrix dynamics;
         dynamics.setZero(); // Start at zero
         // Non-zero terms
@@ -155,13 +155,13 @@ namespace vio_node::error_state_ekf {
                                                                                     skewSymmetric(specific_force_unbiased_imu);
         dynamics.block<error_state::block_size, error_state::block_size>
             (error_state::velocity_index, error_state::accelerometer_bias_index) = -1.0 * world_from_imu.toRotationMatrix();
-        // G matrix
+        // G - Noise Jacobian
         ImuNoiseJacobian noise_jacobian;
         noise_jacobian.setZero(); // Start at zero
         // Non-zero terms
         noise_jacobian.block<error_state::block_size, imu_noise::block_size>
             (error_state::orientation_index, imu_noise::gyroscope_index) = -1.0 * Eigen::Matrix3d::Identity();
-        noise_jacobian.block<error_state::block_size, imu_noise::block_sizee>
+        noise_jacobian.block<error_state::block_size, imu_noise::block_size>
             (error_state::velocity_index, imu_noise::accelerometer_index) = -1.0 * world_from_imu.toRotationMatrix();
         noise_jacobian.block<error_state::block_size, imu_noise::block_size>
             (error_state::gyroscope_bias_index, imu_noise::gyroscope_bias_index) = Eigen::Matrix3d::Identity();
@@ -171,19 +171,19 @@ namespace vio_node::error_state_ekf {
         ContinuousImuNoiseCovariance noise_covariance;
         noise_covariance.setZero(); // Start at zero
         // Non-zero terms
-        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+        noise_covariance.block<imu_noise::block_size, imu_noise::block_size>
             (imu_noise::gyroscope_index, imu_noise::gyroscope_index) =
                 noise_parameters.gyroscope_noise_density_rad_s_sqrt_hz * noise_parameters.gyroscope_noise_density_rad_s_sqrt_hz *
                     Eigen::Matrix3d::Identity();
-        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+        noise_covariance.block<imu_noise::block_size, imu_noise::block_size>
             (imu_noise::accelerometer_index, imu_noise::accelerometer_index) =
                 noise_parameters.accelerometer_noise_density_m_s2_sqrt_hz * noise_parameters.accelerometer_noise_density_m_s2_sqrt_hz *
                     Eigen::Matrix3d::Identity();
-        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+        noise_covariance.block<imu_noise::block_size, imu_noise::block_size>
             (imu_noise::gyroscope_bias_index, imu_noise::gyroscope_bias_index) =
                 noise_parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz * noise_parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz *
                     Eigen::Matrix3d::Identity();
-        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+        noise_covariance.block<imu_noise::block_size, imu_noise::block_size>
             (imu_noise::accelerometer_bias_index, imu_noise::accelerometer_bias_index) =
                 noise_parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz * noise_parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz *
                     Eigen::Matrix3d::Identity();
@@ -199,7 +199,37 @@ namespace vio_node::error_state_ekf {
             noise_jacobian,
             noise_covariance
         };
+    }
 
+    std::optional<DiscreteErrorStateModel> discretizeErrorStateLinearization(
+        const ErrorStateLinearization& linearization,
+        double dt_s)
+    {
+        // dt_s must be finite & positive
+        if(!std::isfinite(dt_s) || dt_s <= 0){return std::nullopt;}
+        // F, G, Qc must be finite
+        if(!linearization.dynamics.allFinite() ||
+           !linearization.noise_jacobian.allFinite() ||
+           !linearization.noise_covariance.allFinite()){return std::nullopt;}
+        // Qc must be symmetric
+        if(!linearization.noise_covariance.isApprox(linearization.noise_covariance.transpose())){return std::nullopt;}
+        // Discrete error model: delta_x_(k+1) = Phi * delta_x_k + process_noise
+        // Phi(first order approximation) - Phi = I + F * dt
+        ErrorStateTransitionMatrix Phi = ErrorStateCovariance::Identity() + linearization.dynamics * dt_s;
+        // Qd = G * Qc * G^t * dt
+        ErrorStateCovariance Qd = linearization.noise_jacobian * linearization.noise_covariance *
+                                    linearization.noise_jacobian.transpose() * dt_s;
+        // Force numerical symmetry:
+        Qd = 0.5 * (Qd + Qd.transpose());
+        // Validate
+        // Phi & Qd are finite
+        if(!Phi.allFinite() || !Qd.allFinite()){return std::nullopt;}
+        // Qd symmetric
+        if(!Qd.isApprox(Qd.transpose())){return std::nullopt;}
+        DiscreteErrorStateModel model;
+        model.transition = Phi;
+        model.process_covariance = Qd;
+        return model;
     }
 
 }  // namespace vio_node::error_state_ekf

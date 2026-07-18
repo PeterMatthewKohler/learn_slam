@@ -21,6 +21,10 @@ namespace vio_node::error_state_ekf {
         const Eigen::Vector3d& specific_force_unbiased_imu,
         const ImuNoiseParameters& noise_parameters);
 
+    std::optional<DiscreteErrorStateModel> discretizeErrorStateLinearization(
+        const ErrorStateLinearization& linearization,
+        double dt_s);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP
