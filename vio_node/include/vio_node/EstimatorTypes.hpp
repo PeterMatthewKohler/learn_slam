@@ -81,6 +81,13 @@ namespace vio_node {
         FilterState filter_state;
         VisualPoseMeasurementQueue pending_visual_measurements;
     };
+
+    struct ImuNoiseParameters {
+        double gyroscope_noise_density_rad_s_sqrt_hz;       // orientation uncertainty
+        double accelerometer_noise_density_m_s2_sqrt_hz;    // velocity/position uncertainty
+        double gyroscope_bias_random_walk_rad_s2_sqrt_hz;   // gyroscope-bias uncertainty
+        double accelerometer_bias_random_walk_m_s3_sqrt_hz; // accelerometer-bias uncertainty
+    };
 }  // namespace vio_node
 
 #endif  // ESTIMATOR_TYPES_HPP

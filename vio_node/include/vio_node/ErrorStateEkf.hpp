@@ -12,6 +12,9 @@ namespace vio_node::error_state_ekf {
         const EstimatorState& nominal_state,
         const InitialCovarianceParameters& parameters);
 
+    bool validateImuNoiseParameters(
+        const ImuNoiseParameters& parameters);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP

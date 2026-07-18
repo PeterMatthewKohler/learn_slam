@@ -12,6 +12,14 @@ namespace {
             std::isfinite(variance) &&
             variance > 0.0;
     }
+
+    bool validNoiseDensity(double noise_density)
+    {
+        const double squared_noise_density = noise_density * noise_density;
+        return std::isfinite(noise_density) &&
+            noise_density >= 0.0 &&
+            std::isfinite(squared_noise_density);
+    }
 }  // namespace
 
 namespace vio_node::error_state_ekf {
@@ -95,6 +103,19 @@ namespace vio_node::error_state_ekf {
             return std::nullopt;
         }
         return filter_state;
+    }
+
+    bool validateImuNoiseParameters(
+        const ImuNoiseParameters& parameters)
+    {
+        return validNoiseDensity(
+                   parameters.gyroscope_noise_density_rad_s_sqrt_hz) &&
+            validNoiseDensity(
+                   parameters.accelerometer_noise_density_m_s2_sqrt_hz) &&
+            validNoiseDensity(
+                   parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz) &&
+            validNoiseDensity(
+                   parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz);
     }
 
 }  // namespace vio_node::error_state_ekf
