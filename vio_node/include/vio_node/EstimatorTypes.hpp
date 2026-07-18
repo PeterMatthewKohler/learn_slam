@@ -23,6 +23,35 @@ namespace vio_node {
         Eigen::Vector3d accelerometer_bias;
     };
 
+    namespace error_state {
+        constexpr int block_size = 3;
+
+        constexpr int position_index = 0;
+        constexpr int orientation_index = 3;    // Right-multiplicative error:
+                                                // q_true = q_nominal * Exp(delta_theta)
+        constexpr int velocity_index = 6;
+        constexpr int gyroscope_bias_index = 9;
+        constexpr int accelerometer_bias_index = 12;
+
+        constexpr int state_size = 15;
+    }
+
+    using ErrorStateVector =
+        Eigen::Matrix<double, error_state::state_size, 1>;
+
+    using ErrorStateCovariance =
+        Eigen::Matrix<
+            double,
+            error_state::state_size,
+            error_state::state_size>;
+
+    struct FilterState {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EstimatorState nominal_state;
+        ErrorStateCovariance covariance;
+    };
+
     struct VisualPoseMeasurement {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
