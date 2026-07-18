@@ -113,6 +113,47 @@ The body pose for ROS output is derived from the fixed body-to-IMU extrinsic:
 T_WB = T_WI * T_I_B
 ```
 
+### Error-State Covariance Model
+
+The nonlinear nominal state is propagated directly, while a 15x15 covariance
+tracks uncertainty in the small error state:
+
+```text
+delta_x = [delta_p, delta_theta, delta_v, delta_b_g, delta_b_a]
+```
+
+Orientation uses a right-multiplicative error:
+
+```text
+q_true = q_nominal * Exp(delta_theta)
+```
+
+The continuous error dynamics are:
+
+```text
+delta_x_dot = F * delta_x + G * n
+```
+
+`F` describes how existing errors couple into other state errors. For example,
+velocity error accumulates into position error, gyro-bias error creates
+orientation error, and tilt or accelerometer-bias error creates velocity error.
+`G` maps the 12 noise components `[n_g, n_a, n_bg, n_ba]` into the 15-state
+error coordinates. `Qc` contains the continuous noise densities squared, so
+`G * Qc * G^T` is the continuous covariance growth rate.
+
+The first implementation uses a first-order discretization over each IMU
+interval:
+
+```text
+Phi    = I + F * dt
+Qd     = G * Qc * G^T * dt
+P_next = Phi * P * Phi^T + Qd
+```
+
+Initial covariance `P`, IMU process covariance `Qc`/`Qd`, and visual measurement
+covariance `R` represent different uncertainty sources and are configured and
+applied separately.
+
 ## Timestamp Contract
 
 Each synchronized stereo pair defines one visual measurement time `t_k`. The raw

@@ -20,6 +20,17 @@ namespace {
             noise_density >= 0.0 &&
             std::isfinite(squared_noise_density);
     }
+
+    // skewSymmetric(a) * b = a cross b
+    Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& vector)
+    {
+        Eigen::Matrix3d skew;
+        skew <<
+            0.0,       -vector.z(),  vector.y(),
+            vector.z(), 0.0,        -vector.x(),
+            -vector.y(), vector.x(),   0.0;
+        return skew;
+    }
 }  // namespace
 
 namespace vio_node::error_state_ekf {
@@ -116,6 +127,79 @@ namespace vio_node::error_state_ekf {
                    parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz) &&
             validNoiseDensity(
                    parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz);
+    }
+
+    std::optional<ErrorStateLinearization> buildContinuousTimeLinearization(
+        const Eigen::Quaterniond& world_from_imu,
+        const Eigen::Vector3d& angular_velocity_unbiased_imu,
+        const Eigen::Vector3d& specific_force_unbiased_imu,
+        const ImuNoiseParameters& noise_parameters)
+    {
+        // validate inputs
+        if(!validation::isUnitQuaternion(world_from_imu) ||
+           !validation::isFinite(angular_velocity_unbiased_imu) ||
+           !validation::isFinite(specific_force_unbiased_imu) ||
+           !validateImuNoiseParameters(noise_parameters)){return std::nullopt;}
+        // F matrix
+        ErrorStateDynamicsMatrix dynamics;
+        dynamics.setZero(); // Start at zero
+        // Non-zero terms
+        dynamics.block<error_state::block_size, error_state::block_size>
+            (error_state::position_index, error_state::velocity_index) = Eigen::Matrix3d::Identity();
+        dynamics.block<error_state::block_size, error_state::block_size>
+            (error_state::orientation_index, error_state::orientation_index) = -skewSymmetric(angular_velocity_unbiased_imu);
+        dynamics.block<error_state::block_size, error_state::block_size>
+            (error_state::orientation_index, error_state::gyroscope_bias_index) = -1.0 * Eigen::Matrix3d::Identity();
+        dynamics.block<error_state::block_size, error_state::block_size>
+            (error_state::velocity_index, error_state::orientation_index) = -1.0 * world_from_imu.toRotationMatrix() *
+                                                                                    skewSymmetric(specific_force_unbiased_imu);
+        dynamics.block<error_state::block_size, error_state::block_size>
+            (error_state::velocity_index, error_state::accelerometer_bias_index) = -1.0 * world_from_imu.toRotationMatrix();
+        // G matrix
+        ImuNoiseJacobian noise_jacobian;
+        noise_jacobian.setZero(); // Start at zero
+        // Non-zero terms
+        noise_jacobian.block<error_state::block_size, imu_noise::block_size>
+            (error_state::orientation_index, imu_noise::gyroscope_index) = -1.0 * Eigen::Matrix3d::Identity();
+        noise_jacobian.block<error_state::block_size, imu_noise::block_sizee>
+            (error_state::velocity_index, imu_noise::accelerometer_index) = -1.0 * world_from_imu.toRotationMatrix();
+        noise_jacobian.block<error_state::block_size, imu_noise::block_size>
+            (error_state::gyroscope_bias_index, imu_noise::gyroscope_bias_index) = Eigen::Matrix3d::Identity();
+        noise_jacobian.block<error_state::block_size, imu_noise::block_size>
+            (error_state::accelerometer_bias_index, imu_noise::accelerometer_bias_index) = Eigen::Matrix3d::Identity();
+        // Qc - Continuous Noise Covariance
+        ContinuousImuNoiseCovariance noise_covariance;
+        noise_covariance.setZero(); // Start at zero
+        // Non-zero terms
+        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+            (imu_noise::gyroscope_index, imu_noise::gyroscope_index) =
+                noise_parameters.gyroscope_noise_density_rad_s_sqrt_hz * noise_parameters.gyroscope_noise_density_rad_s_sqrt_hz *
+                    Eigen::Matrix3d::Identity();
+        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+            (imu_noise::accelerometer_index, imu_noise::accelerometer_index) =
+                noise_parameters.accelerometer_noise_density_m_s2_sqrt_hz * noise_parameters.accelerometer_noise_density_m_s2_sqrt_hz *
+                    Eigen::Matrix3d::Identity();
+        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+            (imu_noise::gyroscope_bias_index, imu_noise::gyroscope_bias_index) =
+                noise_parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz * noise_parameters.gyroscope_bias_random_walk_rad_s2_sqrt_hz *
+                    Eigen::Matrix3d::Identity();
+        noise_covariance.block<error_state::block_size, imu_noise::block_size>
+            (imu_noise::accelerometer_bias_index, imu_noise::accelerometer_bias_index) =
+                noise_parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz * noise_parameters.accelerometer_bias_random_walk_m_s3_sqrt_hz *
+                    Eigen::Matrix3d::Identity();
+        // validate
+        if(!dynamics.allFinite() ||
+            !noise_jacobian.allFinite() ||
+            !noise_covariance.allFinite()) {
+            return std::nullopt;
+        }
+
+        return ErrorStateLinearization{
+            dynamics,
+            noise_jacobian,
+            noise_covariance
+        };
+
     }
 
 }  // namespace vio_node::error_state_ekf

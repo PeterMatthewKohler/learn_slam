@@ -88,6 +88,33 @@ namespace vio_node {
         double gyroscope_bias_random_walk_rad_s2_sqrt_hz;   // gyroscope-bias uncertainty
         double accelerometer_bias_random_walk_m_s3_sqrt_hz; // accelerometer-bias uncertainty
     };
+
+    namespace imu_noise {
+        constexpr int block_size = 3;
+
+        constexpr int gyroscope_index = 0;
+        constexpr int accelerometer_index = 3;
+        constexpr int gyroscope_bias_index = 6;
+        constexpr int accelerometer_bias_index = 9;
+
+        constexpr int noise_size = 12;
+    }
+
+    using ErrorStateDynamicsMatrix =
+        Eigen::Matrix<double, error_state::state_size, error_state::state_size>;
+
+    using ImuNoiseJacobian =
+        Eigen::Matrix<double, error_state::state_size, imu_noise::noise_size>;
+
+    using ContinuousImuNoiseCovariance =
+        Eigen::Matrix<double, imu_noise::noise_size, imu_noise::noise_size>;
+
+    struct ErrorStateLinearization {
+        ErrorStateDynamicsMatrix dynamics;
+        ImuNoiseJacobian noise_jacobian;
+        ContinuousImuNoiseCovariance noise_covariance;
+    };
+
 }  // namespace vio_node
 
 #endif  // ESTIMATOR_TYPES_HPP
