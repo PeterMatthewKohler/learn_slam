@@ -1,4 +1,5 @@
 #include <vio_node/VIONode.hpp>
+#include <vio_node/ErrorStateEkf.hpp>
 
 #include <cmath>
 #include <stdexcept>
@@ -185,6 +186,45 @@ namespace vio_node {
             initialCovarianceParameters_.accelerometer_bias_stddev_m_s2,
             "initial_accelerometer_bias_stddev_m_s2"
         );
+
+        this->declare_parameter(
+            "imu_gyroscope_noise_density_rad_s_sqrt_hz",
+            1.0e-4
+        );
+        imuNoiseParameters_.gyroscope_noise_density_rad_s_sqrt_hz =
+            this->get_parameter(
+                "imu_gyroscope_noise_density_rad_s_sqrt_hz").as_double();
+
+        this->declare_parameter(
+            "imu_accelerometer_noise_density_m_s2_sqrt_hz",
+            1.0e-3
+        );
+        imuNoiseParameters_.accelerometer_noise_density_m_s2_sqrt_hz =
+            this->get_parameter(
+                "imu_accelerometer_noise_density_m_s2_sqrt_hz").as_double();
+
+        this->declare_parameter(
+            "imu_gyroscope_bias_random_walk_rad_s2_sqrt_hz",
+            1.0e-6
+        );
+        imuNoiseParameters_.gyroscope_bias_random_walk_rad_s2_sqrt_hz =
+            this->get_parameter(
+                "imu_gyroscope_bias_random_walk_rad_s2_sqrt_hz").as_double();
+
+        this->declare_parameter(
+            "imu_accelerometer_bias_random_walk_m_s3_sqrt_hz",
+            1.0e-5
+        );
+        imuNoiseParameters_.accelerometer_bias_random_walk_m_s3_sqrt_hz =
+            this->get_parameter(
+                "imu_accelerometer_bias_random_walk_m_s3_sqrt_hz").as_double();
+
+        if(!error_state_ekf::validateImuNoiseParameters(
+               imuNoiseParameters_)) {
+            throw std::invalid_argument(
+                "IMU noise parameters must be finite, nonnegative, and produce finite squared values"
+            );
+        }
 
         this->declare_parameter("visual_measurement_queue_max_size", 20);
         const auto visual_measurement_queue_max_size =

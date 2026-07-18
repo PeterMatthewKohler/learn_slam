@@ -29,6 +29,13 @@ namespace vio_node::error_state_ekf {
         const ErrorStateCovariance& covariance,
         const DiscreteErrorStateModel& model);
 
+    std::optional<FilterState> propagateFilterStateCovariance(
+        const FilterState& current_filter_state,
+        const EstimatorState& propagated_nominal_state,
+        const ImuMeasurement& start_measurement,
+        const ImuMeasurement& end_measurement,
+        const ImuNoiseParameters& noise_parameters);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP

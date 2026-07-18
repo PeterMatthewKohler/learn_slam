@@ -42,19 +42,25 @@ namespace {
         // Validates covariance finiteness, symmetry, and positive definiteness
         return covariance_llt.info() == Eigen::Success;
     }
+
+    bool validEstimatorState(const vio_node::EstimatorState& state)
+    {
+        if(!vio_node::validation::isFinite(state.position_world_imu) ||
+           !vio_node::validation::isFinite(state.velocity_world_imu) ||
+           !vio_node::validation::isFinite(state.gyroscope_bias) ||
+           !vio_node::validation::isFinite(state.accelerometer_bias) ||
+           !vio_node::validation::isUnitQuaternion(state.world_from_imu)) {
+            return false;
+        }
+        return true;
+    }
 }  // namespace
 
 namespace vio_node::error_state_ekf {
     bool validateFilterState(const FilterState& filter_state)
     {
         const EstimatorState& nominal_state = filter_state.nominal_state;
-        if(!validation::isFinite(nominal_state.position_world_imu) ||
-           !validation::isFinite(nominal_state.velocity_world_imu) ||
-           !validation::isFinite(nominal_state.gyroscope_bias) ||
-           !validation::isFinite(nominal_state.accelerometer_bias) ||
-           !validation::isUnitQuaternion(nominal_state.world_from_imu)) {
-            return false;
-        }
+        if(!validEstimatorState(nominal_state)){return false;}
 
         return validErrorStateCovariance(filter_state.covariance);
     }
@@ -254,6 +260,80 @@ namespace vio_node::error_state_ekf {
         // Validate and return
         if(!validErrorStateCovariance(prop_covariance)){return std::nullopt;}
         return prop_covariance;
+    }
+
+    std::optional<FilterState> propagateFilterStateCovariance(
+        const FilterState& current_filter_state,
+        const EstimatorState& propagated_nominal_state,
+        const ImuMeasurement& start_measurement,
+        const ImuMeasurement& end_measurement,
+        const ImuNoiseParameters& noise_parameters)
+    {
+        // Validation
+        // Require current filter state is valid
+        if(!validateFilterState(current_filter_state)){return std::nullopt;}
+        // validate estimator state
+        if(!validEstimatorState(propagated_nominal_state)){return std::nullopt;}
+        // Start and end measurement timestamps uses same clock
+        if(!validation::useSameClock(start_measurement.stamp, end_measurement.stamp)){return std::nullopt;}
+        // Current state and start_measurement use same clock and have same timestamp
+        if(!validation::useSameClock(current_filter_state.nominal_state.stamp, start_measurement.stamp) ||
+           current_filter_state.nominal_state.stamp != start_measurement.stamp){return std::nullopt;}
+        // Propagated nominal stamp and end_measurement use same clock and have same timestamp
+        if(!validation::useSameClock(propagated_nominal_state.stamp, end_measurement.stamp) ||
+           propagated_nominal_state.stamp != end_measurement.stamp){return std::nullopt;}
+        // Start time is before end time
+        if(start_measurement.stamp >= end_measurement.stamp){return std::nullopt;}
+        // Noise params are valid
+        if(!validateImuNoiseParameters(noise_parameters)){return std::nullopt;}
+        // dt finite and positive
+        rclcpp::Duration dt = end_measurement.stamp - start_measurement.stamp;
+        if(dt.seconds() <= 0 || !std::isfinite(dt.seconds())){return std::nullopt;}
+        // We use midpoint values because F and G change with orientation, angular velocity, and specific force.
+        // The midpoint is a better representation of the full interval than either endpoint.
+        // Validate IMU measurements
+        if(!start_measurement.angular_velocity.allFinite() || !start_measurement.linear_acceleration.allFinite() ||
+           !end_measurement.angular_velocity.allFinite() || !end_measurement.linear_acceleration.allFinite()){return std::nullopt;}
+        // Calculate unbiased midpoint measurements
+        const Eigen::Vector3d angular_velocity_mid = 0.5 * (start_measurement.angular_velocity +
+                                                            end_measurement.angular_velocity) -
+                                                            current_filter_state.nominal_state.gyroscope_bias;
+
+        const Eigen::Vector3d specific_force_mid = 0.5 * (start_measurement.linear_acceleration +
+                                                          end_measurement.linear_acceleration) -
+                                                          current_filter_state.nominal_state.accelerometer_bias;
+        // Calc midpoint orientation
+        Eigen::Quaterniond world_from_imu_mid =
+            current_filter_state.nominal_state.world_from_imu.slerp(    // spherical linear interpolation
+                0.5,
+                propagated_nominal_state.world_from_imu
+            );
+        if(!validation::isUnitQuaternion(world_from_imu_mid)){return std::nullopt;}
+        world_from_imu_mid.normalize();
+        // Linearize our non-linear error state model
+        const auto linearization = buildContinuousTimeLinearization(
+            world_from_imu_mid,
+            angular_velocity_mid,
+            specific_force_mid,
+            noise_parameters);
+        if(!linearization){return std::nullopt;}
+        // Discretize the linearized error state model
+        const auto discrete_model = discretizeErrorStateLinearization(
+            *linearization,
+            dt.seconds());
+        if(!discrete_model){return std::nullopt;}
+        // Propagate covariance in our filter state
+        const auto prop_covariance = propagateErrorStateCovariance(
+            current_filter_state.covariance,
+            *discrete_model);
+        if(!prop_covariance){return std::nullopt;}
+        // Build our propagated filter state
+        FilterState prop_filter_state;
+        prop_filter_state.nominal_state = propagated_nominal_state;
+        prop_filter_state.covariance = *prop_covariance;
+        // Validate
+        if(!validateFilterState(prop_filter_state)){return std::nullopt;}
+        return prop_filter_state;
     }
 
 }  // namespace vio_node::error_state_ekf

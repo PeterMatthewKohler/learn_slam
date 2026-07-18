@@ -141,6 +141,18 @@ orientation error, and tilt or accelerometer-bias error creates velocity error.
 error coordinates. `Qc` contains the continuous noise densities squared, so
 `G * Qc * G^T` is the continuous covariance growth rate.
 
+The initial simulator-oriented noise densities are:
+
+```text
+imu_gyroscope_noise_density_rad_s_sqrt_hz          = 1.0e-4
+imu_accelerometer_noise_density_m_s2_sqrt_hz       = 1.0e-3
+imu_gyroscope_bias_random_walk_rad_s2_sqrt_hz      = 1.0e-6
+imu_accelerometer_bias_random_walk_m_s3_sqrt_hz    = 1.0e-5
+```
+
+These small positive values exercise covariance growth but are not measured
+Isaac Sim sensor specifications. They should be tuned from sensor data later.
+
 The first implementation uses a first-order discretization over each IMU
 interval:
 
