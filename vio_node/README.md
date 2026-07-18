@@ -4,10 +4,11 @@
 ROS 2. It is under active development and does not yet publish an odometry
 estimate.
 
-The current implementation rectifies stereo images, detects and tracks sparse
-features, and calculates metric depth from stereo disparity. The remaining work
-is to estimate visual motion, process the IMU stream, fuse the measurements, and
-publish a state estimate.
+The current implementation rectifies stereo images, tracks sparse stereo
+features, estimates metric visual motion, initializes from a stationary IMU
+window, and propagates a nominal IMU state. Timestamped visual pose
+measurements are queued until the IMU buffer covers them. The remaining core
+work is the error-state Kalman filter correction and odometry publication.
 
 ## Frame Contract
 
@@ -123,11 +124,13 @@ t_k = t_camera + camera_imu_time_offset_sec
 A positive time offset moves the visual measurement later relative to the IMU
 clock. The initial configured offset is zero.
 
-For each visual frame, the estimator will eventually:
+For each accepted visual frame, the estimator:
 
 1. Integrate every IMU measurement over `(t_(k-1), t_k]`.
 2. Interpolate IMU measurements at the integration boundaries when necessary.
-3. Apply the visual correction at `t_k`.
+3. Prepare the propagated state and visual pose measurement at the same `t_k`.
+
+The visual correction at `t_k` is the next estimator-backend step.
 
 Timestamp rules:
 
@@ -137,6 +140,29 @@ Timestamp rules:
 - Detect and report large IMU gaps.
 - Reject stereo pairs whose timestamps exceed the configured synchronization
   tolerance.
+
+## Visual Measurement Contract
+
+Stereo visual odometry maintains `T_W_CL`. Each accepted camera pose is
+converted into the IMU pose used by the estimator:
+
+```text
+T_W_I_visual = T_W_CL * inverse(T_I_CL)
+```
+
+The resulting measurement contains `p_WI`, `q_WI`, its visual timestamp, and a
+6x6 covariance ordered as `[position, orientation error]`. The initial diagonal
+noise model is configured by:
+
+```text
+visual_position_stddev_m       = 0.05
+visual_orientation_stddev_rad  = 0.035
+```
+
+These are initial learning/simulator values and should later be tuned using EKF
+innovation statistics. Measurements are kept in a bounded chronological queue.
+If the newest buffered IMU sample is older than a visual timestamp, processing
+waits without extrapolating and retries when the next IMU message arrives.
 
 ## Initialization Contract
 
@@ -170,7 +196,7 @@ TF publication remains disabled while the ground-truth TF tree owns `base_link`.
    contracts.
 2. Make stereo feature tracks geometrically reliable and estimator-ready.
 3. Implement and validate stereo visual odometry.
-4. Add timestamped IMU buffering, initialization, and preintegration.
+4. Add timestamped IMU buffering, initialization, and nominal propagation.
 5. Fuse visual and inertial measurements in an estimator backend.
 6. Publish complete odometry, covariance, status, and optional TF output.
 7. Add unit, rosbag replay, accuracy, failure-recovery, and performance tests.
@@ -196,9 +222,22 @@ Completed:
   camera/IMU offset.
 - Rejected duplicate or backward IMU and visual timestamps.
 
-### Current Point 2 Status
+### Points 2-4 Status: Core Implementation Complete
 
-Point 2 prepares stereo tracks for visual odometry. A surviving
+The tracking and estimator-input path now includes:
+
+- Temporal forward-backward and stereo left-right consistency checks.
+- Metric stereo triangulation and persistent feature ages.
+- Spatially balanced visual correspondences and PnP pose estimation.
+- Visual pose quality checks and world-frame pose composition.
+- Timestamped IMU buffering with boundary interpolation and gap detection.
+- Stationary initialization of gravity direction and gyroscope bias.
+- Midpoint nominal-state propagation through complete IMU intervals.
+- Visual camera-to-IMU pose conversion with validated covariance.
+- A bounded pending-measurement queue that waits for IMU timestamp coverage.
+- An explicit timestamp-aligned handoff for the upcoming EKF correction.
+
+A surviving
 `TrackedFeature` represents the same scene point in two consecutive stereo
 frames:
 
@@ -215,30 +254,15 @@ stereo observation. A new track starts at `1`; a track that survives temporal
 tracking and current-frame stereo validation increments by one. Motion
 estimation must only use tracks with `age >= 2`.
 
-Completed:
+### Next: Point 5 Error-State EKF
 
-1. Correct and document feature-observation state advancement.
-2. Add temporal forward-backward tracking validation.
-3. Add stereo left-right consistency validation.
-4. Benchmark per-stage tracker timing and feature survival.
-5. Match the image-subscription QoS to Isaac Sim and verify an approximately
-   `22 Hz` synchronized stereo rate.
+The next implementation starts the filter backend:
 
-The initial simulator baseline maintained approximately `476-478` tracks. The
-tracker averaged `14-16 ms` per frame: temporal tracking and existing-feature
-stereo matching each required about `3-4 ms`, while replenishment required
-about `30-40 ms` once every five frames. Tracker processing therefore does not
-limit the current visual update rate.
+1. Add the 15x15 error-state covariance and validated IMU noise parameters.
+2. Propagate covariance alongside the nominal IMU state.
+3. Form visual position and orientation residuals at the prepared timestamp.
+4. Apply the Kalman correction and inject the error into the nominal state.
+5. Add innovation, covariance, and consistency diagnostics before publishing.
 
-Reliable header-stamp sampling verified that both Isaac Sim cameras publish
-at the same `60 Hz` simulation cadence with identical timestamps. The low
-accepted-pair rate was instead traced to the VIO image subscriptions requesting
-best-effort sensor QoS while Isaac Sim offered reliable, depth-10 delivery.
-
-Remaining:
-
-1. Improve feature spatial distribution and processing performance based on
-   those measurements.
-2. Move tracker thresholds and feature-count targets into validated
-   parameters.
-3. Add focused tracker tests.
+Tracker parameterization, focused tests, performance tuning, and recovery after
+a broken visual pose chain remain hardening work under roadmap point 7.

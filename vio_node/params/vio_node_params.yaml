@@ -23,3 +23,6 @@ vio_node:
     imu_stationary_max_accel_stddev_m_s2: 0.01
     imu_stationary_gravity_magnitude_m_s2: 9.8
     imu_stationary_gravity_tolerance_m_s2: 0.1
+    visual_measurement_queue_max_size: 20
+    visual_position_stddev_m: 0.05
+    visual_orientation_stddev_rad: 0.035

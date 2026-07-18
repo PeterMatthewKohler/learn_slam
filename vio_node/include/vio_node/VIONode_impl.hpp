@@ -20,6 +20,7 @@
 // Eigen
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
+#include <Eigen/StdVector>
 // OpenCV
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -75,6 +76,22 @@ namespace vio_node {
         Eigen::Vector3d gyroscope_bias;
         Eigen::Vector3d accelerometer_bias;
     };
+
+    struct VisualPoseMeasurement {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        rclcpp::Time stamp;
+
+        Eigen::Vector3d position_world_imu;
+        Eigen::Quaterniond world_from_imu;
+
+        // Residual order: [position, orientation error].
+        Eigen::Matrix<double, 6, 6> covariance;
+    };
+
+    using VisualPoseMeasurementQueue = std::deque<
+        VisualPoseMeasurement,
+        Eigen::aligned_allocator<VisualPoseMeasurement>>;
 
     class VIONode : public rclcpp::Node
     {
@@ -182,6 +199,18 @@ namespace vio_node {
             const EstimatorState& initial_state,
             const std::vector<ImuMeasurement>& measurements,
             const Eigen::Vector3d& gravity_world) const;
+        std::optional<VisualCameraPose> visualCameraPoseFromEstimatorState(
+            const EstimatorState& state,
+            const geometry_msgs::msg::TransformStamped& imu_from_camera) const;
+        std::optional<VisualPoseMeasurement> visualPoseMeasurementFromCameraPose(
+            const VisualCameraPose& world_from_camera,
+            const rclcpp::Time& stamp,
+            const geometry_msgs::msg::TransformStamped& imu_from_camera) const;
+        bool validateVisualPoseMeasurement(
+            const VisualPoseMeasurement& measurement) const;
+        bool enqueueVisualPoseMeasurement(
+            const VisualPoseMeasurement& measurement);
+        void processPendingVisualMeasurements();
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -200,16 +229,15 @@ namespace vio_node {
                                const std::string& expected_target,
                                const std::string& expected_source);
         bool validateStereoTransform(const geometry_msgs::msg::TransformStamped& left_from_right);
-        bool transformToOpenCV(
-            const geometry_msgs::msg::TransformStamped& transform,
-            cv::Matx33d& rotation_target_from_source,
-            cv::Vec3d& translation_target_from_source) const;
-        std::optional<VisualCameraPose> visualCameraPoseFromTransform(
-            const geometry_msgs::msg::TransformStamped& transform) const;
+        bool transformToOpenCV(const geometry_msgs::msg::TransformStamped& transform,
+                               cv::Matx33d& rotation_target_from_source,
+                               cv::Vec3d& translation_target_from_source) const;
         // Internal states
         std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
         std::optional<ImuInitialization> imuInitialization_;
+        std::optional<rclcpp::Time> visualCameraPoseStamp_;
         std::optional<EstimatorState> estimatorState_;
+        VisualPoseMeasurementQueue pendingVisualMeasurements_;
         std::optional<sensor_msgs::msg::CameraInfo> currentLeftCamInfo_;
         std::optional<sensor_msgs::msg::CameraInfo> currentRightCamInfo_;
         std::optional<rclcpp::Time> lastVisualStamp_;
@@ -251,6 +279,9 @@ namespace vio_node {
         double imuStationaryAccelStddevMS2_;
         double imuStationaryGravMagMS2_;
         double imuStationaryGravTolMS2_;
+        std::size_t visualMeasurementQueueMaxSize_;
+        double visualPositionStddevM_;
+        double visualOrientationStddevRad_;
     };
 
 }   // namespace vio_node

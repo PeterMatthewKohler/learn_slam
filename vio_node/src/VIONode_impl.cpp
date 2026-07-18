@@ -270,21 +270,6 @@ namespace vio_node {
         return rotation_is_finite && translation_is_finite;
     }
 
-    std::optional<VisualCameraPose> VIONode::visualCameraPoseFromTransform(
-        const geometry_msgs::msg::TransformStamped& transform) const
-    {
-        cv::Matx33d rotation_world_from_camera;
-        cv::Vec3d translation_world_from_camera;
-        if(!transformToOpenCV(
-            transform,
-            rotation_world_from_camera,
-            translation_world_from_camera)){return std::nullopt;}
-
-        return VisualCameraPose{
-            rotation_world_from_camera,
-            translation_world_from_camera};
-    }
-
     std::optional<VisualBodyPose> VIONode::visualBodyPoseFromCameraPose(
         const VisualCameraPose& world_from_camera,
         const geometry_msgs::msg::TransformStamped& imu_from_camera,
@@ -531,6 +516,42 @@ namespace vio_node {
             throw std::invalid_argument(
                 "imu_stationary_gravity_tolerance_m_s2 must be finite, positive, and smaller than imu_stationary_gravity_magnitude_m_s2");
         }
+
+        this->declare_parameter("visual_measurement_queue_max_size", 20);
+        const auto visual_measurement_queue_max_size =
+            this->get_parameter("visual_measurement_queue_max_size").as_int();
+        if(visual_measurement_queue_max_size < 1) {
+            throw std::invalid_argument(
+                "visual_measurement_queue_max_size must be at least 1");
+        }
+        visualMeasurementQueueMaxSize_ =
+            static_cast<std::size_t>(visual_measurement_queue_max_size);
+
+        this->declare_parameter("visual_position_stddev_m", 0.05);
+        visualPositionStddevM_ =
+            this->get_parameter("visual_position_stddev_m").as_double();
+        const double visual_position_variance =
+            visualPositionStddevM_ * visualPositionStddevM_;
+        if(!std::isfinite(visualPositionStddevM_) ||
+           visualPositionStddevM_ <= 0.0 ||
+           !std::isfinite(visual_position_variance) ||
+           visual_position_variance <= 0.0) {
+            throw std::invalid_argument(
+                "visual_position_stddev_m must be finite, positive, and produce a finite positive variance");
+        }
+
+        this->declare_parameter("visual_orientation_stddev_rad", 0.035);
+        visualOrientationStddevRad_ =
+            this->get_parameter("visual_orientation_stddev_rad").as_double();
+        const double visual_orientation_variance =
+            visualOrientationStddevRad_ * visualOrientationStddevRad_;
+        if(!std::isfinite(visualOrientationStddevRad_) ||
+           visualOrientationStddevRad_ <= 0.0 ||
+           !std::isfinite(visual_orientation_variance) ||
+           visual_orientation_variance <= 0.0) {
+            throw std::invalid_argument(
+                "visual_orientation_stddev_rad must be finite, positive, and produce a finite positive variance");
+        }
     }
 
     void VIONode::imuCallback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
@@ -560,9 +581,10 @@ namespace vio_node {
             // covariance_is_finite(msg->orientation_covariance) &&
             // covariance_is_finite(msg->angular_velocity_covariance) &&
             // covariance_is_finite(msg->linear_acceleration_covariance));
-        std::lock_guard<std::mutex> lock(dataMutex_);
+        bool measurement_accepted = false;
         if(isFinite)
         {
+            std::lock_guard<std::mutex> lock(dataMutex_);
             rclcpp::Time msg_stamp(msg->header.stamp);
             if(imuBuffer_.empty()) {
                 imuBuffer_.push_front(*msg);
@@ -593,6 +615,7 @@ namespace vio_node {
                     imuBuffer_.pop_back();
                 }
             }
+            measurement_accepted = true;
         }
         else {
             RCLCPP_WARN_THROTTLE(
@@ -600,6 +623,10 @@ namespace vio_node {
                 *get_clock(),
                 1000,
                 "IMU message rejected, message values nonfinite");
+        }
+
+        if(measurement_accepted) {
+            processPendingVisualMeasurements();
         }
     }
 
@@ -1162,4 +1189,450 @@ namespace vio_node {
         if(prop_state.stamp != measurements.back().stamp){return std::nullopt;}
         return prop_state;
     }
+
+    std::optional<VisualCameraPose> VIONode::visualCameraPoseFromEstimatorState(
+        const EstimatorState& state,
+        const geometry_msgs::msg::TransformStamped& imu_from_camera) const
+    {
+        const auto vector_is_finite = [](const Eigen::Vector3d& vector) {
+            return std::isfinite(vector.x()) &&
+                std::isfinite(vector.y()) &&
+                std::isfinite(vector.z());
+        };
+        const auto translation_is_finite = [](const cv::Vec3d& translation) {
+            return std::isfinite(translation[0]) &&
+                std::isfinite(translation[1]) &&
+                std::isfinite(translation[2]);
+        };
+
+        if(!vector_is_finite(state.position_world_imu) ||
+           !state.world_from_imu.coeffs().allFinite()){return std::nullopt;}
+
+        const double quaternion_squared_norm =
+            state.world_from_imu.squaredNorm();
+        if(!std::isfinite(quaternion_squared_norm) ||
+           std::abs(quaternion_squared_norm - 1.0) > 1e-6){return std::nullopt;}
+
+        // Build Camera->World from Imu->World * Camera->Imu
+        // T_WC = T_WI * T_IC
+        const Eigen::Matrix3d R_WI_eigen =
+            state.world_from_imu.toRotationMatrix();
+        const cv::Matx33d R_WI(
+            R_WI_eigen(0, 0), R_WI_eigen(0, 1), R_WI_eigen(0, 2),
+            R_WI_eigen(1, 0), R_WI_eigen(1, 1), R_WI_eigen(1, 2),
+            R_WI_eigen(2, 0), R_WI_eigen(2, 1), R_WI_eigen(2, 2));
+        const cv::Vec3d t_WI(
+            state.position_world_imu.x(),
+            state.position_world_imu.y(),
+            state.position_world_imu.z());
+
+        cv::Matx33d R_IC;
+        cv::Vec3d t_IC;
+        if(!transformToOpenCV(imu_from_camera, R_IC, t_IC)){return std::nullopt;}
+
+        const cv::Matx33d R_WC = R_WI * R_IC;
+        const cv::Vec3d t_WC = t_WI + R_WI * t_IC;
+
+        if(!translation_is_finite(t_WC) ||
+           !quaternionFromRotationMatrix(R_WC)){return std::nullopt;}
+
+        return VisualCameraPose{R_WC, t_WC};
+    }
+
+    std::optional<VisualPoseMeasurement> VIONode::visualPoseMeasurementFromCameraPose(
+        const VisualCameraPose& world_from_camera,
+        const rclcpp::Time& stamp,
+        const geometry_msgs::msg::TransformStamped& imu_from_camera) const
+    {
+        const auto translation_is_finite = [](const cv::Vec3d& translation) {
+            return std::isfinite(translation[0]) &&
+                std::isfinite(translation[1]) &&
+                std::isfinite(translation[2]);
+        };
+
+        if(imu_from_camera.header.frame_id != imuFrameID_ ||
+           imu_from_camera.child_frame_id != leftCameraFrameID_ ||
+           !translation_is_finite(
+               world_from_camera.translation_world_from_camera) ||
+           !quaternionFromRotationMatrix(
+               world_from_camera.rotation_world_from_camera)) {
+            return std::nullopt;
+        }
+
+        cv::Matx33d R_I_C;
+        cv::Vec3d t_I_C;
+        if(!transformToOpenCV(imu_from_camera, R_I_C, t_I_C)) {
+            return std::nullopt;
+        }
+
+        // T_W_I = T_W_C * inverse(T_I_C)
+        const cv::Matx33d R_C_I = R_I_C.t();
+        const cv::Vec3d t_C_I = -(R_C_I * t_I_C);
+        const cv::Matx33d R_W_I =
+            world_from_camera.rotation_world_from_camera * R_C_I;
+        const cv::Vec3d t_W_I =
+            world_from_camera.translation_world_from_camera +
+            world_from_camera.rotation_world_from_camera * t_C_I;
+
+        const auto orientation = quaternionFromRotationMatrix(R_W_I);
+        if(!translation_is_finite(t_W_I) || !orientation) {
+            return std::nullopt;
+        }
+
+        const double position_variance =
+            visualPositionStddevM_ * visualPositionStddevM_;
+        const double orientation_variance =
+            visualOrientationStddevRad_ * visualOrientationStddevRad_;
+        if(!std::isfinite(position_variance) ||
+           !std::isfinite(orientation_variance) ||
+           position_variance <= 0.0 ||
+           orientation_variance <= 0.0) {
+            return std::nullopt;
+        }
+
+        VisualPoseMeasurement measurement;
+        measurement.stamp = stamp;
+        measurement.position_world_imu = Eigen::Vector3d(
+            t_W_I[0],
+            t_W_I[1],
+            t_W_I[2]
+        );
+        measurement.world_from_imu = Eigen::Quaterniond(
+            orientation->w,
+            orientation->x,
+            orientation->y,
+            orientation->z
+        );
+        if(measurement.world_from_imu.w() < 0.0) {
+            measurement.world_from_imu.coeffs() *= -1.0;
+        }
+
+        measurement.covariance.setZero();
+        measurement.covariance.block<3, 3>(0, 0) =
+            Eigen::Matrix3d::Identity() * position_variance;
+        measurement.covariance.block<3, 3>(3, 3) =
+            Eigen::Matrix3d::Identity() * orientation_variance;
+
+        if(!validateVisualPoseMeasurement(measurement)) {
+            return std::nullopt;
+        }
+        return measurement;
+    }
+
+    bool VIONode::validateVisualPoseMeasurement(
+        const VisualPoseMeasurement& measurement) const
+    {
+        if(!measurement.position_world_imu.allFinite() ||
+           !measurement.world_from_imu.coeffs().allFinite() ||
+           !measurement.covariance.allFinite()) {
+            return false;
+        }
+
+        const double quaternion_squared_norm =
+            measurement.world_from_imu.squaredNorm();
+        if(!std::isfinite(quaternion_squared_norm) ||
+           std::abs(quaternion_squared_norm - 1.0) > 1e-6) {
+            return false;
+        }
+
+        if(!measurement.covariance.isApprox(
+               measurement.covariance.transpose(), 1e-12)) {
+            return false;
+        }
+
+        const Eigen::LLT<Eigen::Matrix<double, 6, 6>> covariance_llt(
+            measurement.covariance
+        );
+        return covariance_llt.info() == Eigen::Success;
+    }
+
+    bool VIONode::enqueueVisualPoseMeasurement(
+        const VisualPoseMeasurement& measurement)
+    {
+        if(!validateVisualPoseMeasurement(measurement)) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Rejected invalid visual pose measurement"
+            );
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        if(imuInitialization_.has_value() != estimatorState_.has_value()) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Cannot enqueue visual measurement because estimator initialization is inconsistent"
+            );
+            return false;
+        }
+        if(!imuInitialization_ || !estimatorState_) {
+            return false;
+        }
+        if(measurement.stamp.get_clock_type() !=
+           estimatorState_->stamp.get_clock_type()) {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Rejected visual measurement using a different ROS clock than the estimator state"
+            );
+            return false;
+        }
+        if(measurement.stamp <= estimatorState_->stamp) {
+            RCLCPP_DEBUG_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Skipped visual measurement at %.9f s because estimator state is already at %.9f s",
+                measurement.stamp.seconds(),
+                estimatorState_->stamp.seconds()
+            );
+            return false;
+        }
+
+        if(!pendingVisualMeasurements_.empty()) {
+            const auto& latest_pending = pendingVisualMeasurements_.back();
+            if(latest_pending.stamp.get_clock_type() !=
+               measurement.stamp.get_clock_type() ||
+               measurement.stamp <= latest_pending.stamp) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Rejected non-increasing or clock-mismatched visual measurement timestamp"
+                );
+                return false;
+            }
+        }
+
+        if(pendingVisualMeasurements_.size() >=
+           visualMeasurementQueueMaxSize_) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Visual measurement queue reached %zu entries; dropping oldest measurement",
+                visualMeasurementQueueMaxSize_
+            );
+            pendingVisualMeasurements_.pop_front();
+        }
+
+        pendingVisualMeasurements_.push_back(measurement);
+        return true;
+    }
+
+    void VIONode::processPendingVisualMeasurements()
+    {
+        while(true) {
+            std::deque<sensor_msgs::msg::Imu> buffer;
+            std::optional<ImuInitialization> initialization;
+            std::optional<EstimatorState> current_state;
+            std::optional<VisualPoseMeasurement> measurement;
+            std::size_t pending_measurement_count = 0;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                if(pendingVisualMeasurements_.empty()) {
+                    return;
+                }
+                buffer = imuBuffer_;
+                initialization = imuInitialization_;
+                current_state = estimatorState_;
+                measurement = pendingVisualMeasurements_.front();
+                pending_measurement_count = pendingVisualMeasurements_.size();
+            }
+
+            if(initialization.has_value() != current_state.has_value() ||
+               !initialization || !current_state) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Cannot process pending visual measurement because estimator initialization is inconsistent"
+                );
+                return;
+            }
+            if(!validateVisualPoseMeasurement(*measurement)) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Dropping invalid measurement from visual measurement queue"
+                );
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                if(!pendingVisualMeasurements_.empty() &&
+                   pendingVisualMeasurements_.front().stamp ==
+                   measurement->stamp) {
+                    pendingVisualMeasurements_.pop_front();
+                }
+                continue;
+            }
+            if(measurement->stamp.get_clock_type() !=
+               current_state->stamp.get_clock_type()) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Dropping visual measurement using a different ROS clock than the estimator state"
+                );
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                if(!pendingVisualMeasurements_.empty() &&
+                   pendingVisualMeasurements_.front().stamp.get_clock_type() ==
+                       measurement->stamp.get_clock_type() &&
+                   pendingVisualMeasurements_.front().stamp.nanoseconds() ==
+                   measurement->stamp.nanoseconds()) {
+                    pendingVisualMeasurements_.pop_front();
+                }
+                continue;
+            }
+            if(measurement->stamp <= current_state->stamp) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Dropping stale visual measurement at %.9f s; estimator state is at %.9f s",
+                    measurement->stamp.seconds(),
+                    current_state->stamp.seconds()
+                );
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                if(!pendingVisualMeasurements_.empty() &&
+                   pendingVisualMeasurements_.front().stamp ==
+                   measurement->stamp) {
+                    pendingVisualMeasurements_.pop_front();
+                }
+                continue;
+            }
+            if(buffer.size() < std::size_t(2)) {
+                return;
+            }
+
+            const rclcpp::Time oldest_imu_stamp(buffer.back().header.stamp);
+            const rclcpp::Time newest_imu_stamp(buffer.front().header.stamp);
+            if(oldest_imu_stamp.get_clock_type() !=
+                   current_state->stamp.get_clock_type() ||
+               newest_imu_stamp.get_clock_type() !=
+                   current_state->stamp.get_clock_type()) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Cannot process visual measurement because IMU and estimator timestamps use different ROS clocks"
+                );
+                return;
+            }
+            if(newest_imu_stamp < measurement->stamp) {
+                RCLCPP_DEBUG_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Waiting for IMU coverage of visual measurement: visual=%.9f s, newest_imu=%.9f s, pending=%zu",
+                    measurement->stamp.seconds(),
+                    newest_imu_stamp.seconds(),
+                    pending_measurement_count
+                );
+                return;
+            }
+            if(oldest_imu_stamp > current_state->stamp) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Cannot propagate estimator from %.9f s because oldest buffered IMU sample is %.9f s",
+                    current_state->stamp.seconds(),
+                    oldest_imu_stamp.seconds()
+                );
+                return;
+            }
+
+            const auto imu_measurements = extractImuMeasurements(
+                buffer,
+                current_state->stamp,
+                measurement->stamp
+            );
+            if(!imu_measurements) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "IMU extraction failed for covered visual interval [%.9f, %.9f] s",
+                    current_state->stamp.seconds(),
+                    measurement->stamp.seconds()
+                );
+                return;
+            }
+
+            const auto propagated_state =
+                propagateEstimatorStateThroughMeasurements(
+                    *current_state,
+                    *imu_measurements,
+                    initialization->gravity_world
+                );
+            if(!propagated_state ||
+               propagated_state->stamp != measurement->stamp) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Estimator propagation to pending visual measurement at %.9f s failed",
+                    measurement->stamp.seconds()
+                );
+                return;
+            }
+
+            // The EKF visual correction will be applied here. Both the nominal
+            // state and visual measurement now describe the same timestamp.
+            bool handoff_stored = false;
+            bool stale_snapshot_detected = false;
+            std::size_t remaining_measurements = 0;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                if(!imuInitialization_ ||
+                   !estimatorState_ ||
+                   estimatorState_->stamp != current_state->stamp ||
+                   pendingVisualMeasurements_.empty() ||
+                   pendingVisualMeasurements_.front().stamp !=
+                       measurement->stamp) {
+                    stale_snapshot_detected = true;
+                }
+                else {
+                    estimatorState_ = *propagated_state;
+                    pendingVisualMeasurements_.pop_front();
+                    remaining_measurements = pendingVisualMeasurements_.size();
+                    handoff_stored = true;
+                }
+            }
+
+            if(stale_snapshot_detected) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Discarded prepared visual handoff because estimator state or queue advanced concurrently"
+                );
+                return;
+            }
+            if(handoff_stored) {
+                RCLCPP_DEBUG_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Visual measurement handoff ready: stamp=%.9f s, position_world_imu=[%.9f, %.9f, %.9f] m, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], quaternion_norm=%.9f, pending=%zu",
+                    measurement->stamp.seconds(),
+                    measurement->position_world_imu.x(),
+                    measurement->position_world_imu.y(),
+                    measurement->position_world_imu.z(),
+                    measurement->world_from_imu.x(),
+                    measurement->world_from_imu.y(),
+                    measurement->world_from_imu.z(),
+                    measurement->world_from_imu.w(),
+                    measurement->world_from_imu.norm(),
+                    remaining_measurements
+                );
+            }
+        }
+    }
+
 }   // namespace vio_node

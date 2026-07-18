@@ -148,36 +148,17 @@ namespace vio_node {
         const int min_features = 300;
         const int max_features = 500;
         const int detect_every_n_frames = 5;
+        std::optional<VisualCameraPose> visual_pose_for_measurement;
+        const auto invalidate_visual_pose_chain = [this]() {
+            visualCameraPose_.reset();
+            visualCameraPoseStamp_.reset();
+            visualPoseChainValid_ = false;
+        };
 
         const bool first_visual_frame = prev_left_rectified_.empty();
         if(first_visual_frame || tracked_features_.empty()) {
             tracked_features_.clear();
-            // Init our visual pose if its our first frame
-            if(first_visual_frame) {
-                std::optional<geometry_msgs::msg::TransformStamped> imu_from_left;
-                {
-                    std::lock_guard<std::mutex> lock(dataMutex_);
-                    imu_from_left = imuFromLeftCamera_;
-                }
-                const auto initial_camera_pose = imu_from_left
-                    ? visualCameraPoseFromTransform(*imu_from_left)
-                    : std::nullopt;
-                if(initial_camera_pose) {
-                    visualCameraPose_ = *initial_camera_pose;
-                    visualPoseChainValid_ = true;
-                }
-                else {
-                    visualCameraPose_.reset();
-                    visualPoseChainValid_ = false;
-                    RCLCPP_WARN_THROTTLE(
-                        get_logger(),
-                        *get_clock(),
-                        1000,
-                        "Failed to initialize visual pose from IMU -> left camera transform"
-                    );
-                }
-            }
-            else {visualPoseChainValid_ = false;}
+            invalidate_visual_pose_chain();
             // Add new tracked features
             addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, max_features);
         }
@@ -206,7 +187,7 @@ namespace vio_node {
                     "Visual PnP failed - Candidate Count: " << correspondences.size()
                     << ", Selected Count: " << selected.size());
 
-                visualPoseChainValid_ = false;
+                invalidate_visual_pose_chain();
             }
             else if(!passesVisualPoseQualityChecks(*pose)){
                 RCLCPP_WARN_STREAM_THROTTLE(
@@ -218,23 +199,54 @@ namespace vio_node {
                     << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
                     << ", Median 3D Error(m): " << pose->median_3d_error_m);
 
-                visualPoseChainValid_ = false;
+                invalidate_visual_pose_chain();
             }
             else{   // Relative visual pose valid
-                if(visualPoseChainValid_ && visualCameraPose_.has_value()) {
-                    // Perform pose composition
-                    const auto composed = composeVisualCameraPose(*visualCameraPose_, *pose);
-                    if(!composed){
-                        visualPoseChainValid_ = false;
-
-                        RCLCPP_WARN_THROTTLE(
+                const bool visual_pose_state_consistent =
+                    (visualPoseChainValid_ &&
+                     visualCameraPose_.has_value() &&
+                     visualCameraPoseStamp_.has_value()) ||
+                    (!visualPoseChainValid_ &&
+                     !visualCameraPose_.has_value() &&
+                     !visualCameraPoseStamp_.has_value());
+                if(!visual_pose_state_consistent) {
+                    RCLCPP_ERROR_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Visual pose, timestamp, and validity state are inconsistent"
+                    );
+                    invalidate_visual_pose_chain();
+                }
+                else if(visualPoseChainValid_) {
+                    if(visualCameraPoseStamp_->get_clock_type() != stamp.get_clock_type() ||
+                       stamp <= *visualCameraPoseStamp_) {
+                        RCLCPP_ERROR_THROTTLE(
                             get_logger(),
                             *get_clock(),
                             1000,
-                            "Visual camera pose composition failed");
+                            "Cannot compose visual pose with a non-increasing or mismatched timestamp"
+                        );
+                        invalidate_visual_pose_chain();
                     }
-                    else{
-                        visualCameraPose_ = *composed;
+                    else {
+                        // Perform pose composition
+                        const auto composed =
+                            composeVisualCameraPose(*visualCameraPose_, *pose);
+                        if(!composed){
+                            invalidate_visual_pose_chain();
+
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Visual camera pose composition failed");
+                        }
+                        else{
+                            visualCameraPose_ = *composed;
+                            visualCameraPoseStamp_ = stamp;
+                            visual_pose_for_measurement = *composed;
+                        }
                     }
                 }
             }
@@ -248,149 +260,54 @@ namespace vio_node {
                 }
             }
         }
-        // Propagate the nominal estimator state to the current visual
-        // timestamp. Work from snapshots so failures cannot partially update
-        // shared estimator state.
-        std::deque<sensor_msgs::msg::Imu> buffer;
-        std::optional<EstimatorState> current_state;
-        std::optional<ImuInitialization> imu_initialization;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            buffer = imuBuffer_;
-            current_state = estimatorState_;
-            imu_initialization = imuInitialization_;
-        }
 
-        if(buffer.size() >= std::size_t(2) &&
-           current_state.has_value() != imu_initialization.has_value()) {
-            RCLCPP_ERROR_THROTTLE(
-                get_logger(),
-                *get_clock(),
-                1000,
-                "Cannot propagate inconsistent IMU initialization and estimator state"
-            );
-        }
-        else if(buffer.size() >= std::size_t(2) &&
-                current_state && imu_initialization) {
-            if(current_state->stamp.get_clock_type() != stamp.get_clock_type()) {
-                RCLCPP_ERROR_THROTTLE(
+        if(visual_pose_for_measurement) {
+            std::optional<geometry_msgs::msg::TransformStamped>
+                imu_from_left_camera;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                imu_from_left_camera = imuFromLeftCamera_;
+            }
+
+            if(!imu_from_left_camera) {
+                RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "Estimator state and visual timestamp use different ROS clocks"
+                    "Cannot create visual measurement before IMU-to-left-camera extrinsics are available"
                 );
             }
-            else if(stamp > current_state->stamp) {
-                const auto imu_measurements = extractImuMeasurements(
-                    buffer,
-                    current_state->stamp,
-                    stamp
-                );
-                if(!imu_measurements) {
+            else {
+                const auto visual_measurement =
+                    visualPoseMeasurementFromCameraPose(
+                        *visual_pose_for_measurement,
+                        stamp,
+                        *imu_from_left_camera
+                    );
+                if(!visual_measurement) {
                     RCLCPP_WARN_THROTTLE(
                         get_logger(),
                         *get_clock(),
                         1000,
-                        "IMU extraction from buffer from time %.9f s to %.9f s failed",
-                        current_state->stamp.seconds(),
-                        stamp.seconds()
+                        "Failed to create visual IMU-pose measurement"
                     );
                 }
                 else {
-                    const auto propagated_state =
-                        propagateEstimatorStateThroughMeasurements(
-                            *current_state,
-                            *imu_measurements,
-                            imu_initialization->gravity_world
-                        );
-
-                    if(!propagated_state) {
-                        RCLCPP_WARN_THROTTLE(
-                            get_logger(),
-                            *get_clock(),
-                            1000,
-                            "Estimator propagation from %.9f s to %.9f s failed",
-                            current_state->stamp.seconds(),
-                            stamp.seconds()
-                        );
-                    }
-                    else if(propagated_state->stamp != stamp) {
-                        RCLCPP_ERROR_THROTTLE(
-                            get_logger(),
-                            *get_clock(),
-                            1000,
-                            "Propagated estimator state did not reach visual timestamp"
-                        );
-                    }
-                    else {
-                        bool propagation_stored = false;
-                        bool inconsistent_state_detected = false;
-                        bool stale_snapshot_detected = false;
-                        {
-                            std::lock_guard<std::mutex> lock(dataMutex_);
-                            if(imuInitialization_.has_value() !=
-                               estimatorState_.has_value() ||
-                               !imuInitialization_ ||
-                               !estimatorState_) {
-                                inconsistent_state_detected = true;
-                            }
-                            else if(estimatorState_->stamp != current_state->stamp) {
-                                stale_snapshot_detected = true;
-                            }
-                            else {
-                                estimatorState_ = *propagated_state;
-                                propagation_stored = true;
-                            }
-                        }
-
-                        if(inconsistent_state_detected) {
-                            RCLCPP_ERROR_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Cannot store propagated state because estimator initialization is inconsistent"
-                            );
-                        }
-                        else if(stale_snapshot_detected) {
-                            RCLCPP_WARN_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Discarded propagated state because estimator state advanced concurrently"
-                            );
-                        }
-
-                        if(propagation_stored) {
-                            const double interval_duration_s =
-                                (imu_measurements->back().stamp -
-                                 imu_measurements->front().stamp).seconds();
-                            const double quaternion_norm =
-                                propagated_state->world_from_imu.norm();
-
-                            RCLCPP_DEBUG_THROTTLE(
-                                get_logger(),
-                                *get_clock(),
-                                1000,
-                                "Estimator propagation: samples=%zu, duration=%.9f s, state_stamp=%.9f s, position_world_imu=[%.9f, %.9f, %.9f] m, velocity_world_imu=[%.9f, %.9f, %.9f] m/s, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], quaternion_norm=%.9f",
-                                imu_measurements->size(),
-                                interval_duration_s,
-                                propagated_state->stamp.seconds(),
-                                propagated_state->position_world_imu.x(),
-                                propagated_state->position_world_imu.y(),
-                                propagated_state->position_world_imu.z(),
-                                propagated_state->velocity_world_imu.x(),
-                                propagated_state->velocity_world_imu.y(),
-                                propagated_state->velocity_world_imu.z(),
-                                propagated_state->world_from_imu.x(),
-                                propagated_state->world_from_imu.y(),
-                                propagated_state->world_from_imu.z(),
-                                propagated_state->world_from_imu.w(),
-                                quaternion_norm
-                            );
-                        }
-                    }
+                    enqueueVisualPoseMeasurement(*visual_measurement);
                 }
             }
+        }
+
+        // Process every queued visual measurement currently covered by the IMU
+        // buffer. Measurements newer than the buffer remain pending without an
+        // error and will be retried from the IMU callback.
+        processPendingVisualMeasurements();
+
+        // Snapshot the latest IMU buffer for initialization statistics.
+        std::deque<sensor_msgs::msg::Imu> buffer;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            buffer = imuBuffer_;
         }
 
         // Compute initialization statistics from the latest complete IMU
@@ -445,6 +362,7 @@ namespace vio_node {
                     bool inconsistent_state_detected = false;
                     std::optional<ImuInitialization> initialization;
                     std::optional<EstimatorState> initial_state;
+                    std::optional<VisualCameraPose> initial_camera_pose;
                     if(imu_window_stationary) {
                         initialization = computeImuInitialization(*statistics, window_end);
                         if(!initialization) {
@@ -464,16 +382,91 @@ namespace vio_node {
                                         "Initial estimator state timestamp does not match IMU initialization timestamp"
                                     );
                                 }
+                                else if(stamp.get_clock_type() !=
+                                        initialization->stamp.get_clock_type() ||
+                                        stamp.get_clock_type() !=
+                                        window_start.get_clock_type() ||
+                                        stamp.get_clock_type() !=
+                                        window_end.get_clock_type()) {
+                                    RCLCPP_ERROR_THROTTLE(
+                                        get_logger(),
+                                        *get_clock(),
+                                        2000,
+                                        "Cannot anchor visual pose because the visual and IMU initialization timestamps use different ROS clocks"
+                                    );
+                                }
+                                else if(stamp < window_start || stamp > window_end) {
+                                    RCLCPP_WARN_THROTTLE(
+                                        get_logger(),
+                                        *get_clock(),
+                                        2000,
+                                        "Cannot anchor visual pose at %.9f s because it is outside the stationary IMU window [%.9f, %.9f] s",
+                                        stamp.seconds(),
+                                        window_start.seconds(),
+                                        window_end.seconds()
+                                    );
+                                }
                                 else {
-                                    std::lock_guard<std::mutex> lock(dataMutex_);
-                                    if(imuInitialization_.has_value() !=
-                                       estimatorState_.has_value()) {
-                                        inconsistent_state_detected = true;
+                                    std::optional<geometry_msgs::msg::TransformStamped>
+                                        imu_from_left_camera;
+                                    {
+                                        std::lock_guard<std::mutex> lock(dataMutex_);
+                                        imu_from_left_camera = imuFromLeftCamera_;
                                     }
-                                    else if(!imuInitialization_ && !estimatorState_) {
-                                        imuInitialization_ = *initialization;
-                                        estimatorState_ = *initial_state;
-                                        initialization_stored = true;
+
+                                    if(!imu_from_left_camera) {
+                                        RCLCPP_WARN_THROTTLE(
+                                            get_logger(),
+                                            *get_clock(),
+                                            2000,
+                                            "Cannot anchor visual pose before the IMU-to-left-camera transform is available"
+                                        );
+                                    }
+                                    else if(imu_from_left_camera->header.frame_id !=
+                                            imuFrameID_ ||
+                                            imu_from_left_camera->child_frame_id !=
+                                            leftCameraFrameID_) {
+                                        RCLCPP_ERROR_THROTTLE(
+                                            get_logger(),
+                                            *get_clock(),
+                                            2000,
+                                            "Cannot anchor visual pose with transform '%s' -> '%s'; expected '%s' -> '%s'",
+                                            imu_from_left_camera->header.frame_id.c_str(),
+                                            imu_from_left_camera->child_frame_id.c_str(),
+                                            imuFrameID_.c_str(),
+                                            leftCameraFrameID_.c_str()
+                                        );
+                                    }
+                                    else {
+                                        initial_camera_pose =
+                                            visualCameraPoseFromEstimatorState(
+                                                *initial_state,
+                                                *imu_from_left_camera
+                                            );
+                                        if(!initial_camera_pose) {
+                                            RCLCPP_WARN_THROTTLE(
+                                                get_logger(),
+                                                *get_clock(),
+                                                2000,
+                                                "Failed to compute the initial visual camera pose from estimator state and camera extrinsics"
+                                            );
+                                        }
+                                        else {
+                                            std::lock_guard<std::mutex> lock(dataMutex_);
+                                            if(imuInitialization_.has_value() !=
+                                               estimatorState_.has_value()) {
+                                                inconsistent_state_detected = true;
+                                            }
+                                            else if(!imuInitialization_ &&
+                                                    !estimatorState_) {
+                                                imuInitialization_ = *initialization;
+                                                estimatorState_ = *initial_state;
+                                                visualCameraPose_ = *initial_camera_pose;
+                                                visualCameraPoseStamp_ = stamp;
+                                                visualPoseChainValid_ = true;
+                                                initialization_stored = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -501,6 +494,16 @@ namespace vio_node {
                         const Eigen::Vector3d aligned_specific_force =
                             initialization->world_from_imu *
                             statistics->linear_acceleration_mean;
+
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "Visual camera pose anchored at %.9f s from stationary IMU initialization at %.9f s: position_world_camera=[%.9f, %.9f, %.9f] m",
+                            stamp.seconds(),
+                            initialization->stamp.seconds(),
+                            initial_camera_pose->translation_world_from_camera[0],
+                            initial_camera_pose->translation_world_from_camera[1],
+                            initial_camera_pose->translation_world_from_camera[2]
+                        );
 
                         RCLCPP_INFO(
                             get_logger(),
