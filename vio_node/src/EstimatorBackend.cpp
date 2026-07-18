@@ -1,4 +1,5 @@
 #include <vio_node/VIONode.hpp>
+#include <vio_node/ErrorStateEkf.hpp>
 #include <vio_node/Validation.hpp>
 
 #include <cmath>
@@ -352,7 +353,7 @@ namespace vio_node {
             return false;
         }
 
-        auto& state = estimatorContext_->state;
+        auto& state = estimatorContext_->filter_state.nominal_state;
         auto& pending = estimatorContext_->pending_visual_measurements;
         if(!validation::useSameClock(measurement.stamp, state.stamp)) {
             RCLCPP_ERROR_THROTTLE(
@@ -410,7 +411,7 @@ namespace vio_node {
         while(true) {
             std::deque<sensor_msgs::msg::Imu> buffer;
             std::optional<ImuInitialization> initialization;
-            std::optional<EstimatorState> current_state;
+            std::optional<FilterState> current_filter_state;
             std::optional<VisualPoseMeasurement> measurement;
             std::size_t pending_measurement_count = 0;
             {
@@ -422,12 +423,25 @@ namespace vio_node {
 
                 buffer = imuBuffer_;
                 initialization = estimatorContext_->initialization;
-                current_state = estimatorContext_->state;
+                current_filter_state = estimatorContext_->filter_state;
                 measurement =
                     estimatorContext_->pending_visual_measurements.front();
                 pending_measurement_count =
                     estimatorContext_->pending_visual_measurements.size();
             }
+
+            if(!error_state_ekf::validateFilterState(
+                   *current_filter_state)) {
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Cannot process visual measurement with an invalid filter state"
+                );
+                return;
+            }
+            const EstimatorState& current_state =
+                current_filter_state->nominal_state;
 
             if(!validateVisualPoseMeasurement(*measurement)) {
                 RCLCPP_ERROR_THROTTLE(
@@ -447,7 +461,7 @@ namespace vio_node {
             }
             if(!validation::useSameClock(
                    measurement->stamp,
-                   current_state->stamp)) {
+                   current_state.stamp)) {
                 RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -467,14 +481,14 @@ namespace vio_node {
                 }
                 continue;
             }
-            if(measurement->stamp <= current_state->stamp) {
+            if(measurement->stamp <= current_state.stamp) {
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
                     "Dropping stale visual measurement at %.9f s; estimator state is at %.9f s",
                     measurement->stamp.seconds(),
-                    current_state->stamp.seconds()
+                    current_state.stamp.seconds()
                 );
                 std::lock_guard<std::mutex> lock(dataMutex_);
                 if(estimatorContext_ &&
@@ -493,10 +507,10 @@ namespace vio_node {
             const rclcpp::Time newest_imu_stamp(buffer.front().header.stamp);
             if(!validation::useSameClock(
                    oldest_imu_stamp,
-                   current_state->stamp) ||
+                   current_state.stamp) ||
                !validation::useSameClock(
                    newest_imu_stamp,
-                   current_state->stamp)) {
+                   current_state.stamp)) {
                 RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -517,13 +531,13 @@ namespace vio_node {
                 );
                 return;
             }
-            if(oldest_imu_stamp > current_state->stamp) {
+            if(oldest_imu_stamp > current_state.stamp) {
                 RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
                     "Cannot propagate estimator from %.9f s because oldest buffered IMU sample is %.9f s",
-                    current_state->stamp.seconds(),
+                    current_state.stamp.seconds(),
                     oldest_imu_stamp.seconds()
                 );
                 return;
@@ -531,7 +545,7 @@ namespace vio_node {
 
             const auto imu_measurements = extractImuMeasurements(
                 buffer,
-                current_state->stamp,
+                current_state.stamp,
                 measurement->stamp
             );
             if(!imu_measurements) {
@@ -540,7 +554,7 @@ namespace vio_node {
                     *get_clock(),
                     1000,
                     "IMU extraction failed for covered visual interval [%.9f, %.9f] s",
-                    current_state->stamp.seconds(),
+                    current_state.stamp.seconds(),
                     measurement->stamp.seconds()
                 );
                 return;
@@ -548,7 +562,7 @@ namespace vio_node {
 
             const auto propagated_state =
                 propagateEstimatorStateThroughMeasurements(
-                    *current_state,
+                    current_state,
                     *imu_measurements,
                     initialization->gravity_world
                 );
@@ -572,14 +586,16 @@ namespace vio_node {
             {
                 std::lock_guard<std::mutex> lock(dataMutex_);
                 if(!estimatorContext_ ||
-                   estimatorContext_->state.stamp != current_state->stamp ||
+                   estimatorContext_->filter_state.nominal_state.stamp !=
+                       current_state.stamp ||
                    estimatorContext_->pending_visual_measurements.empty() ||
                    estimatorContext_->pending_visual_measurements.front().stamp !=
                        measurement->stamp) {
                     stale_snapshot_detected = true;
                 }
                 else {
-                    estimatorContext_->state = *propagated_state;
+                    estimatorContext_->filter_state.nominal_state =
+                        *propagated_state;
                     estimatorContext_->pending_visual_measurements.pop_front();
                     remaining_measurements =
                         estimatorContext_->pending_visual_measurements.size();

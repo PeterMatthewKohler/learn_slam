@@ -210,6 +210,7 @@ namespace vio_node {
         double imuStationaryAccelStddevMS2_;
         double imuStationaryGravMagMS2_;
         double imuStationaryGravTolMS2_;
+        InitialCovarianceParameters initialCovarianceParameters_;
         std::size_t visualMeasurementQueueMaxSize_;
         double visualPositionStddevM_;
         double visualOrientationStddevRad_;

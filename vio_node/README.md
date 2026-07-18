@@ -177,6 +177,22 @@ VIO initializes independently of ground truth:
 - Bootstrap velocity using subsequent visual motion.
 - Do not use wheel or ground-truth odometry as a hidden prior.
 
+The initial 15x15 error-state covariance is block diagonal. Each block is
+configured by a standard deviation that is squared during initialization:
+
+```text
+initial_position_stddev_m                  = 0.01
+initial_orientation_stddev_rad             = 0.01
+initial_velocity_stddev_m_s                = 0.05
+initial_gyroscope_bias_stddev_rad_s         = 0.001
+initial_accelerometer_bias_stddev_m_s2      = 0.1
+```
+
+The accelerometer-bias prior is broader because stationary initialization does
+not currently distinguish accelerometer bias from gravity. The covariance is
+now initialized and stored with the nominal state; IMU-driven covariance
+propagation is the next filter step.
+
 ## Output Contract
 
 The eventual `nav_msgs/msg/Odometry` output will use:
@@ -210,6 +226,9 @@ state. Sensor processing and estimator math are separated by responsibility:
 - `EstimatorInitialization.cpp`: atomic estimator/visual-anchor initialization.
 - `EstimatorBackend.cpp`: nominal-state propagation and queued visual
   measurement handoff.
+- `ErrorStateEkf.cpp`: ROS-independent error-state covariance initialization
+  and filter-state validation, followed by propagation and correction math as
+  those stages are implemented.
 - `VisionTypes.hpp`, `ImuTypes.hpp`, and `EstimatorTypes.hpp`: domain-specific
   data structures.
 - `Validation.hpp`: shared finite-value, quaternion, rotation, and timestamp

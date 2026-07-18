@@ -20,6 +20,7 @@ find_package(OpenCV REQUIRED)
 find_package(cv_bridge REQUIRED)
 
 set(VIONode_SRC
+    src/ErrorStateEkf.cpp
     src/EstimatorBackend.cpp
     src/EstimatorInitialization.cpp
     src/ImuProcessing.cpp
@@ -31,6 +32,7 @@ set(VIONode_SRC
 )
 
 set(VIONode_HEADERS
+    include/vio_node/ErrorStateEkf.hpp
     include/vio_node/VIONode.hpp
     include/vio_node/EstimatorTypes.hpp
     include/vio_node/ImuTypes.hpp

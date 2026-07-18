@@ -1,4 +1,5 @@
 #include <vio_node/VIONode.hpp>
+#include <vio_node/ErrorStateEkf.hpp>
 #include <vio_node/Validation.hpp>
 
 #include <cmath>
@@ -97,6 +98,19 @@ namespace vio_node {
             );
             return;
         }
+
+        const auto initial_filter_state =
+            error_state_ekf::makeInitialFilterState(
+                *initial_state,
+                initialCovarianceParameters_
+            );
+        if(!initial_filter_state) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Failed to create initial filter state and covariance"
+            );
+            return;
+        }
         if(!validation::useSameClock(visual_stamp, initialization->stamp) ||
            !validation::useSameClock(visual_stamp, window_start) ||
            !validation::useSameClock(visual_stamp, window_end)) {
@@ -172,7 +186,7 @@ namespace vio_node {
             if(!estimatorContext_) {
                 EstimatorContext context;
                 context.initialization = *initialization;
-                context.state = *initial_state;
+                context.filter_state = *initial_filter_state;
                 estimatorContext_ = std::move(context);
 
                 visualPoseChain_ = VisualPoseChain{
@@ -225,6 +239,15 @@ namespace vio_node {
             initial_state->velocity_world_imu.y(),
             initial_state->velocity_world_imu.z(),
             initial_state->stamp.seconds()
+        );
+        RCLCPP_INFO(
+            get_logger(),
+            "Initial filter standard deviations: position=%.6f m, orientation=%.6f rad, velocity=%.6f m/s, gyroscope_bias=%.6f rad/s, accelerometer_bias=%.6f m/s^2",
+            initialCovarianceParameters_.position_stddev_m,
+            initialCovarianceParameters_.orientation_stddev_rad,
+            initialCovarianceParameters_.velocity_stddev_m_s,
+            initialCovarianceParameters_.gyroscope_bias_stddev_rad_s,
+            initialCovarianceParameters_.accelerometer_bias_stddev_m_s2
         );
     }
 }  // namespace vio_node

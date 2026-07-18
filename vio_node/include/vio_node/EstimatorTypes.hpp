@@ -52,6 +52,14 @@ namespace vio_node {
         ErrorStateCovariance covariance;
     };
 
+    struct InitialCovarianceParameters {
+        double position_stddev_m;
+        double orientation_stddev_rad;
+        double velocity_stddev_m_s;
+        double gyroscope_bias_stddev_rad_s;
+        double accelerometer_bias_stddev_m_s2;
+    };
+
     struct VisualPoseMeasurement {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -70,7 +78,7 @@ namespace vio_node {
 
     struct EstimatorContext {
         ImuInitialization initialization;
-        EstimatorState state;
+        FilterState filter_state;
         VisualPoseMeasurementQueue pending_visual_measurements;
     };
 }  // namespace vio_node

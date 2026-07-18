@@ -141,6 +141,51 @@ namespace vio_node {
                 "imu_stationary_gravity_tolerance_m_s2 must be finite, positive, and smaller than imu_stationary_gravity_magnitude_m_s2");
         }
 
+        this->declare_parameter("initial_position_stddev_m", 0.01);
+        initialCovarianceParameters_.position_stddev_m =
+            this->get_parameter("initial_position_stddev_m").as_double();
+        requireValidStandardDeviation(
+            initialCovarianceParameters_.position_stddev_m,
+            "initial_position_stddev_m"
+        );
+
+        this->declare_parameter("initial_orientation_stddev_rad", 0.01);
+        initialCovarianceParameters_.orientation_stddev_rad =
+            this->get_parameter("initial_orientation_stddev_rad").as_double();
+        requireValidStandardDeviation(
+            initialCovarianceParameters_.orientation_stddev_rad,
+            "initial_orientation_stddev_rad"
+        );
+
+        this->declare_parameter("initial_velocity_stddev_m_s", 0.05);
+        initialCovarianceParameters_.velocity_stddev_m_s =
+            this->get_parameter("initial_velocity_stddev_m_s").as_double();
+        requireValidStandardDeviation(
+            initialCovarianceParameters_.velocity_stddev_m_s,
+            "initial_velocity_stddev_m_s"
+        );
+
+        this->declare_parameter("initial_gyroscope_bias_stddev_rad_s", 0.001);
+        initialCovarianceParameters_.gyroscope_bias_stddev_rad_s =
+            this->get_parameter(
+                "initial_gyroscope_bias_stddev_rad_s").as_double();
+        requireValidStandardDeviation(
+            initialCovarianceParameters_.gyroscope_bias_stddev_rad_s,
+            "initial_gyroscope_bias_stddev_rad_s"
+        );
+
+        this->declare_parameter(
+            "initial_accelerometer_bias_stddev_m_s2",
+            0.1
+        );
+        initialCovarianceParameters_.accelerometer_bias_stddev_m_s2 =
+            this->get_parameter(
+                "initial_accelerometer_bias_stddev_m_s2").as_double();
+        requireValidStandardDeviation(
+            initialCovarianceParameters_.accelerometer_bias_stddev_m_s2,
+            "initial_accelerometer_bias_stddev_m_s2"
+        );
+
         this->declare_parameter("visual_measurement_queue_max_size", 20);
         const auto visual_measurement_queue_max_size =
             this->get_parameter("visual_measurement_queue_max_size").as_int();
