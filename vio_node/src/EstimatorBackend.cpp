@@ -566,6 +566,35 @@ namespace vio_node {
                 return;
             }
 
+            // A processed visual epoch always advances the filter to the IMU
+            // prediction at that timestamp. An accepted visual update replaces
+            // that prediction with the corrected state. The snapshot checks
+            // keep the state and queue update atomic if callbacks run concurrently.
+            const auto commit_processed_filter_state =
+                [&](const FilterState& processed_filter_state)
+                    -> std::optional<std::size_t> {
+                    if(!error_state_ekf::validateFilterState(
+                           processed_filter_state) ||
+                       processed_filter_state.nominal_state.stamp !=
+                           measurement->stamp) {
+                        return std::nullopt;
+                    }
+
+                    std::lock_guard<std::mutex> lock(dataMutex_);
+                    if(!estimatorContext_ ||
+                       estimatorContext_->filter_state.nominal_state.stamp !=
+                           current_state.stamp ||
+                       estimatorContext_->pending_visual_measurements.empty() ||
+                       estimatorContext_->pending_visual_measurements.front().stamp !=
+                           measurement->stamp) {
+                        return std::nullopt;
+                    }
+
+                    estimatorContext_->filter_state = processed_filter_state;
+                    estimatorContext_->pending_visual_measurements.pop_front();
+                    return estimatorContext_->pending_visual_measurements.size();
+                };
+
             // Apply the visual correction after IMU propagation has aligned the
             // predicted filter state and visual measurement timestamps.
             const auto visual_correction =
@@ -576,24 +605,28 @@ namespace vio_node {
             if(!visual_correction ||
                visual_correction->corrected_filter_state.nominal_state.stamp !=
                    measurement->stamp) {
-                {
-                    std::lock_guard<std::mutex> lock(dataMutex_);
-                    if(estimatorContext_ &&
-                       estimatorContext_->filter_state.nominal_state.stamp ==
-                           current_state.stamp &&
-                       !estimatorContext_->pending_visual_measurements.empty() &&
-                       estimatorContext_->pending_visual_measurements.front().stamp ==
-                           measurement->stamp) {
-                        estimatorContext_->pending_visual_measurements.pop_front();
-                    }
-                    else {return;}  // Snapshot no longer matches
+                const auto remaining_measurements =
+                    commit_processed_filter_state(*propagated_filter_state);
+                if(!remaining_measurements) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Discarded visual-correction failure because estimator state or queue advanced concurrently"
+                    );
+                    return;
                 }
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "Visual correction at %.9f s failed; discarded measurement",
-                    measurement->stamp.seconds()
+                    "Visual correction at %.9f s failed; retained IMU prediction, pending=%zu",
+                    measurement->stamp.seconds(),
+                    *remaining_measurements
+                );
+                publishEstimatorOutput(
+                    *propagated_filter_state,
+                    *imu_measurements
                 );
                 continue;
             }
@@ -614,20 +647,16 @@ namespace vio_node {
                 visual_correction->update_terms.normalized_innovation_squared;
 
             if(nis > visualInnovationGateChi2_) {
-                std::size_t remaining_after_rejection = 0;
-                {
-                    std::lock_guard<std::mutex> lock(dataMutex_);
-                    if(estimatorContext_ &&
-                       estimatorContext_->filter_state.nominal_state.stamp ==
-                           current_state.stamp &&
-                       !estimatorContext_->pending_visual_measurements.empty() &&
-                       estimatorContext_->pending_visual_measurements.front().stamp ==
-                           measurement->stamp) {
-                        estimatorContext_->pending_visual_measurements.pop_front();
-                        remaining_after_rejection =
-                            estimatorContext_->pending_visual_measurements.size();
-                    }
-                    else {return;}  // Snapshot no longer matches
+                const auto remaining_after_rejection =
+                    commit_processed_filter_state(*propagated_filter_state);
+                if(!remaining_after_rejection) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Discarded visual rejection because estimator state or queue advanced concurrently"
+                    );
+                    return;
                 }
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
@@ -639,35 +668,19 @@ namespace vio_node {
                     visualInnovationGateChi2_,
                     position_residual_norm,
                     orientation_residual_norm,
-                    remaining_after_rejection
+                    *remaining_after_rejection
+                );
+                publishEstimatorOutput(
+                    *propagated_filter_state,
+                    *imu_measurements
                 );
                 continue;
             }
 
-            bool correction_stored = false;
-            bool stale_snapshot_detected = false;
-            std::size_t remaining_measurements = 0;
-            {
-                std::lock_guard<std::mutex> lock(dataMutex_);
-                if(!estimatorContext_ ||
-                   estimatorContext_->filter_state.nominal_state.stamp !=
-                       current_state.stamp ||
-                   estimatorContext_->pending_visual_measurements.empty() ||
-                   estimatorContext_->pending_visual_measurements.front().stamp !=
-                       measurement->stamp) {
-                    stale_snapshot_detected = true;
-                }
-                else {
-                    estimatorContext_->filter_state =
-                        visual_correction->corrected_filter_state;
-                    estimatorContext_->pending_visual_measurements.pop_front();
-                    remaining_measurements =
-                        estimatorContext_->pending_visual_measurements.size();
-                    correction_stored = true;
-                }
-            }
-
-            if(stale_snapshot_detected) {
+            const auto remaining_measurements = commit_processed_filter_state(
+                visual_correction->corrected_filter_state
+            );
+            if(!remaining_measurements) {
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -676,27 +689,29 @@ namespace vio_node {
                 );
                 return;
             }
-            if(correction_stored) {
-                const auto& corrected_state =
-                    visual_correction->corrected_filter_state.nominal_state;
-                RCLCPP_INFO_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    1000,
-                    "Visual correction applied: stamp=%.9f s, nis: %.3f, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
-                    measurement->stamp.seconds(),
-                    nis,
-                    position_residual_norm,
-                    orientation_residual_norm,
-                    position_correction_norm,
-                    orientation_correction_norm,
-                    corrected_state.position_world_imu.x(),
-                    corrected_state.position_world_imu.y(),
-                    corrected_state.position_world_imu.z(),
-                    corrected_state.world_from_imu.norm(),
-                    remaining_measurements
-                );
-            }
+            const auto& corrected_state =
+                visual_correction->corrected_filter_state.nominal_state;
+            RCLCPP_INFO_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Visual correction applied: stamp=%.9f s, nis: %.3f, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
+                measurement->stamp.seconds(),
+                nis,
+                position_residual_norm,
+                orientation_residual_norm,
+                position_correction_norm,
+                orientation_correction_norm,
+                corrected_state.position_world_imu.x(),
+                corrected_state.position_world_imu.y(),
+                corrected_state.position_world_imu.z(),
+                corrected_state.world_from_imu.norm(),
+                *remaining_measurements
+            );
+            publishEstimatorOutput(
+                visual_correction->corrected_filter_state,
+                *imu_measurements
+            );
         }
     }
 }  // namespace vio_node

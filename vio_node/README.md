@@ -1,14 +1,15 @@
 # vio_node
 
 `vio_node` is a learning-focused stereo visual-inertial odometry (VIO) node for
-ROS 2. It is under active development and does not yet publish an odometry
-estimate.
+ROS 2. It is under active development and publishes a fused odometry estimate
+at processed visual-frame timestamps.
 
 The current implementation rectifies stereo images, tracks sparse stereo
 features, estimates metric visual motion, initializes from a stationary IMU
-window, and propagates a nominal IMU state. Timestamped visual pose
-measurements are queued until the IMU buffer covers them. The remaining core
-work is the error-state Kalman filter correction and odometry publication.
+window, and propagates and corrects a 15-state error-state Kalman filter.
+Timestamped visual pose measurements are queued until the IMU buffer covers
+them. Accepted visual updates correct the IMU prediction; rejected updates
+retain the prediction at that visual timestamp.
 
 ## Frame Contract
 
@@ -23,7 +24,7 @@ work is the error-state Kalman filter correction and odometry publication.
 The existing `odom -> base_link` transform is ground truth. It is used only for
 external evaluation and must not be consumed by the VIO estimator.
 
-The VIO node will publish an independent estimate in `vio_odom`. It must not
+The VIO node publishes an independent estimate in `vio_odom`. It must not
 publish `odom -> base_link`, because that transform already has an owner. The
 `publish_tf` parameter therefore defaults to `false`.
 
@@ -183,9 +184,10 @@ For each accepted visual frame, the estimator:
 
 1. Integrate every IMU measurement over `(t_(k-1), t_k]`.
 2. Interpolate IMU measurements at the integration boundaries when necessary.
-3. Prepare the propagated state and visual pose measurement at the same `t_k`.
-
-The visual correction at `t_k` is the next estimator-backend step.
+3. Propagate the nominal state and covariance to the same `t_k`.
+4. Apply or reject the timestamp-aligned visual correction.
+5. Publish the corrected state, or the retained IMU prediction when the visual
+   correction is rejected.
 
 Timestamp rules:
 
@@ -217,8 +219,9 @@ visual_innovation_gate_chi2    = 50.0
 
 These are initial learning/simulator values and should later be tuned using EKF
 innovation statistics. The initial innovation gate is deliberately conservative:
-visual measurements with NIS above the configured threshold are discarded without
-modifying the filter state. Measurements are kept in a bounded chronological queue.
+visual corrections with NIS above the configured threshold are discarded while
+the timestamp-aligned IMU prediction is retained. Measurements are kept in a
+bounded chronological queue.
 If the newest buffered IMU sample is older than a visual timestamp, processing
 waits without extrapolating and retries when the next IMU message arrives.
 
@@ -246,12 +249,12 @@ initial_accelerometer_bias_stddev_m_s2      = 0.1
 
 The accelerometer-bias prior is broader because stationary initialization does
 not currently distinguish accelerometer bias from gravity. The covariance is
-now initialized and stored with the nominal state; IMU-driven covariance
-propagation is the next filter step.
+initialized with the nominal state, propagated by the IMU process model, and
+corrected by accepted visual measurements.
 
 ## Output Contract
 
-The eventual `nav_msgs/msg/Odometry` output will use:
+The `nav_msgs/msg/Odometry` output uses:
 
 ```text
 header.frame_id = vio_odom
@@ -261,8 +264,20 @@ twist           = body velocity expressed in base_link
 header.stamp    = estimator state timestamp
 ```
 
-Pose and twist covariance will come from the estimator rather than fixed values.
-TF publication remains disabled while the ground-truth TF tree owns `base_link`.
+The pose is formed from `T_W_I * T_I_B`. Linear and angular velocity are
+expressed in `base_link`; the linear velocity includes the IMU-to-body lever-arm
+term. Pose and twist covariance are mapped from the full estimator covariance,
+including cross-covariances, and twist covariance also includes configured
+gyroscope measurement noise.
+
+Odometry is currently published at processed visual timestamps. An accepted
+visual update publishes the corrected state. A rejected or unusable visual
+update publishes the valid IMU prediction retained at the same timestamp.
+
+When `publish_tf` is enabled, the node broadcasts the matching
+`vio_odom -> base_link` transform. It must remain disabled while another TF
+branch already owns `base_link`, such as the simulator's ground-truth
+`odom -> base_link` transform.
 
 ## Code Organization
 
@@ -282,6 +297,8 @@ state. Sensor processing and estimator math are separated by responsibility:
 - `EstimatorInitialization.cpp`: atomic estimator/visual-anchor initialization.
 - `EstimatorBackend.cpp`: nominal-state propagation and queued visual
   measurement handoff.
+- `EstimatorOutput.cpp`: body-frame odometry, covariance mapping, publication,
+  and optional TF output.
 - `ErrorStateEkf.cpp`: ROS-independent error-state covariance initialization
   and filter-state validation, followed by propagation and correction math as
   those stages are implemented.
@@ -336,7 +353,7 @@ The tracking and estimator-input path now includes:
 - Midpoint nominal-state propagation through complete IMU intervals.
 - Visual camera-to-IMU pose conversion with validated covariance.
 - A bounded pending-measurement queue that waits for IMU timestamp coverage.
-- An explicit timestamp-aligned handoff for the upcoming EKF correction.
+- An explicit timestamp-aligned handoff to the EKF correction.
 
 A surviving
 `TrackedFeature` represents the same scene point in two consecutive stereo
@@ -355,15 +372,30 @@ stereo observation. A new track starts at `1`; a track that survives temporal
 tracking and current-frame stereo validation increments by one. Motion
 estimation must only use tracks with `age >= 2`.
 
-### Next: Point 5 Error-State EKF
+### Point 5 Status: Core Implementation Complete
 
-The next implementation starts the filter backend:
+The estimator backend now includes:
 
-1. Add the 15x15 error-state covariance and validated IMU noise parameters.
-2. Propagate covariance alongside the nominal IMU state.
-3. Form visual position and orientation residuals at the prepared timestamp.
-4. Apply the Kalman correction and inject the error into the nominal state.
-5. Add innovation, covariance, and consistency diagnostics before publishing.
+- A 15-state right-multiplicative error-state model and covariance.
+- IMU-driven nominal-state and covariance propagation.
+- Visual position and orientation residuals and Kalman correction.
+- Joseph-form covariance updates, nominal-state injection, and covariance reset.
+- NIS diagnostics and configurable visual innovation gating.
+- Prediction retention when a visual correction is rejected or unusable.
 
-Tracker parameterization, focused tests, performance tuning, and recovery after
-a broken visual pose chain remain hardening work under roadmap point 7.
+### Point 6 Status: Implementation Complete, Runtime Validation Pending
+
+The output path now includes:
+
+- Body pose composition from the estimated IMU pose and `T_I_B`.
+- Body-frame linear and angular twist at the estimator timestamp.
+- Pose and twist covariance mapping from the EKF covariance.
+- Visual-rate `nav_msgs/msg/Odometry` publication.
+- Optional matching `vio_odom -> base_link` TF publication.
+
+### Next: Point 7 Validation And Hardening
+
+Remaining work includes focused unit tests, rosbag replay and ground-truth
+accuracy evaluation, tracking-loss recovery, data-driven visual covariance,
+noise and innovation-gate tuning, IMU-rate predicted output, and performance
+optimization such as image downscaling.

@@ -21,6 +21,11 @@ namespace vio_node {
             false   // The node executor services /tf and /tf_static.
         );
 
+        if(publishTF_) {
+            tf_broadcaster_ =
+                std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        }
+
         extrinsicsInitTimer_ = create_wall_timer(
             std::chrono::milliseconds(500),
             std::bind(&VIONode::tryInitializeExtrinsics, this)
@@ -327,4 +332,5 @@ namespace vio_node {
 
         return pose;
     }
+
 }  // namespace vio_node

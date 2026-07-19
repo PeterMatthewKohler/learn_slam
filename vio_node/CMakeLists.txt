@@ -23,6 +23,7 @@ set(VIONode_SRC
     src/ErrorStateEkf.cpp
     src/EstimatorBackend.cpp
     src/EstimatorInitialization.cpp
+    src/EstimatorOutput.cpp
     src/ImuProcessing.cpp
     src/Parameters.cpp
     src/VIONode.cpp

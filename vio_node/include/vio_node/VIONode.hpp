@@ -14,6 +14,7 @@
 #include <message_filters/sync_policies/approximate_time.h>
 // TF2
 #include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
 // Eigen
 #include <Eigen/Dense>
@@ -148,10 +149,19 @@ namespace vio_node {
             const VisualPoseMeasurement& measurement);
         void processPendingVisualMeasurements();
         void tryInitializeEstimator(const rclcpp::Time& visual_stamp);
+        std::optional<nav_msgs::msg::Odometry> odometryFromFilterState(
+            const FilterState& filter_state,
+            const ImuMeasurement& imu_measurement,
+            double imu_sample_interval_s,
+            const geometry_msgs::msg::TransformStamped& imu_from_body) const;
+        void publishEstimatorOutput(
+            const FilterState& filter_state,
+            const std::vector<ImuMeasurement>& imu_measurements);
 
         // --- TF2 ---
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+        std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
         void initTF();
         void tryInitializeExtrinsics();
         bool validateFrameID(const std::string& actual, const std::string& expected,
