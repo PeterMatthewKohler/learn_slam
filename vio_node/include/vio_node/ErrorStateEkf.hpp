@@ -36,6 +36,10 @@ namespace vio_node::error_state_ekf {
         const ImuMeasurement& end_measurement,
         const ImuNoiseParameters& noise_parameters);
 
+    std::optional<VisualPoseLinearization> buildVisualPoseLinearization(
+        const FilterState& filter_state,
+        const VisualPoseMeasurement& measurement);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP

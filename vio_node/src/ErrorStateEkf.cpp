@@ -336,4 +336,68 @@ namespace vio_node::error_state_ekf {
         return prop_filter_state;
     }
 
+    std::optional<VisualPoseLinearization> buildVisualPoseLinearization(
+        const FilterState& filter_state,
+        const VisualPoseMeasurement& measurement)
+    {
+        // Validate
+        if(!validateFilterState(filter_state)){return std::nullopt;}
+        if(!validation::isFinite(measurement.position_world_imu) ||
+           !validation::isUnitQuaternion(measurement.world_from_imu) ||
+           !measurement.covariance.allFinite() ||
+           !measurement.covariance.isApprox(
+               measurement.covariance.transpose(),
+               1e-12)) {
+            return std::nullopt;
+        }
+
+        const Eigen::LLT<Eigen::Matrix<double, 6, 6>> covariance_llt(
+            measurement.covariance
+        );
+        // Validates covariance finiteness, symmetry, and positive definiteness
+        if(covariance_llt.info() != Eigen::Success){return std::nullopt;}
+        // State and measurement use same clock and have equal timestamps
+        if(!validation::useSameClock(filter_state.nominal_state.stamp,
+                                     measurement.stamp) ||
+           filter_state.nominal_state.stamp != measurement.stamp){return std::nullopt;}
+        // Build residual
+        const Eigen::Vector3d position_residual =
+            measurement.position_world_imu -
+            filter_state.nominal_state.position_world_imu;
+        Eigen::Quaterniond q_error =
+            filter_state.nominal_state.world_from_imu.conjugate() *
+            measurement.world_from_imu;
+        // Because error is right-multiplicative
+        q_error = validation::canonicalize(q_error);
+        if(!validation::isUnitQuaternion(q_error)){return std::nullopt;}
+        q_error.normalize();
+        // Convert to rotation vector
+        const Eigen::AngleAxisd angle_axis(q_error);
+        const Eigen::Vector3d orientation_residual =
+            angle_axis.axis() * angle_axis.angle();
+        // Build complete residual
+        VisualPoseResidual residual = VisualPoseResidual::Zero();
+        residual.segment<3>(visual_pose::position_index) = position_residual;
+        residual.segment<3>(visual_pose::orientation_index) =
+            orientation_residual;
+        // Build measurement Jacobian matrix H
+        VisualPoseJacobian H = VisualPoseJacobian::Zero();
+        // Non-zero terms
+        H.block<error_state::block_size, error_state::block_size>
+            (visual_pose::position_index, error_state::position_index) =
+                Eigen::Matrix3d::Identity();
+        H.block<error_state::block_size, error_state::block_size>
+            (visual_pose::orientation_index, error_state::orientation_index) =
+                Eigen::Matrix3d::Identity();
+        if(!residual.allFinite() || !H.allFinite()) {
+            return std::nullopt;
+        }
+
+        VisualPoseLinearization output;
+        output.residual = residual;
+        output.jacobian = H;
+        output.measurement_covariance = measurement.covariance;
+        return output;
+    }
+
 }  // namespace vio_node::error_state_ekf

@@ -116,6 +116,16 @@ namespace validation {
     {
         return first.get_clock_type() == second.get_clock_type();
     }
+
+    inline Eigen::Quaterniond canonicalize(
+        const Eigen::Quaterniond& quaternion)
+    {
+        Eigen::Quaterniond canonical = quaternion;
+        if(canonical.w() < 0.0) {
+            canonical.coeffs() *= -1.0;
+        }
+        return canonical;
+    }
 }  // namespace validation
 }  // namespace vio_node
 

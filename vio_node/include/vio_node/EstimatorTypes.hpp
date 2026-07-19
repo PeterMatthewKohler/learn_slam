@@ -125,6 +125,26 @@ namespace vio_node {
         ErrorStateCovariance process_covariance;
     };
 
+    namespace visual_pose {
+        constexpr int position_index = 0;
+        constexpr int orientation_index = 3;
+        constexpr int residual_size = 6;
+    }
+
+    using VisualPoseResidual =
+        Eigen::Matrix<double, visual_pose::residual_size, 1>;
+
+    using VisualPoseJacobian =
+        Eigen::Matrix<double, visual_pose::residual_size, error_state::state_size>;
+
+    struct VisualPoseLinearization {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        VisualPoseResidual residual;
+        VisualPoseJacobian jacobian;
+        Eigen::Matrix<double, 6, 6> measurement_covariance;
+    };
+
 }  // namespace vio_node
 
 #endif  // ESTIMATOR_TYPES_HPP
