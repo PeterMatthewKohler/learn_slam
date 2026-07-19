@@ -192,8 +192,121 @@ namespace vio_node {
         return odometry;
     }
 
+    std::optional<nav_msgs::msg::Odometry>
+    VIONode::visualOdometryFromMeasurement(
+        const VisualPoseMeasurement& measurement,
+        const geometry_msgs::msg::TransformStamped& imu_from_body) const
+    {
+        if(!validateVisualPoseMeasurement(measurement)) {
+            return std::nullopt;
+        }
+
+        // The visual frontend measures T_W_I. Reuse the normal body-pose
+        // conversion so this debug output has the same vio_odom -> base_link
+        // frame contract as the fused estimator output.
+        EstimatorState visual_state;
+        visual_state.stamp = measurement.stamp;
+        visual_state.position_world_imu = measurement.position_world_imu;
+        visual_state.world_from_imu = measurement.world_from_imu;
+        visual_state.velocity_world_imu.setZero();
+        visual_state.gyroscope_bias.setZero();
+        visual_state.accelerometer_bias.setZero();
+
+        const auto body_pose = bodyPoseFromEstimatorState(
+            visual_state,
+            imu_from_body
+        );
+        if(!body_pose) {
+            return std::nullopt;
+        }
+
+        const Eigen::Vector3d translation_imu_from_body(
+            imu_from_body.transform.translation.x,
+            imu_from_body.transform.translation.y,
+            imu_from_body.transform.translation.z
+        );
+        const Eigen::Matrix3d rotation_world_from_imu =
+            measurement.world_from_imu.toRotationMatrix();
+
+        // Map the visual measurement error [delta_p_W, delta_theta_I] to the
+        // published body pose. The IMU-to-body lever arm couples orientation
+        // uncertainty into the body-position covariance.
+        Eigen::Matrix<double, 6, 6> pose_jacobian =
+            Eigen::Matrix<double, 6, 6>::Zero();
+        pose_jacobian.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+        pose_jacobian.block<3, 3>(0, 3) =
+            -rotation_world_from_imu *
+            skewSymmetric(translation_imu_from_body);
+        pose_jacobian.block<3, 3>(3, 3) = rotation_world_from_imu;
+
+        Eigen::Matrix<double, 6, 6> pose_covariance =
+            pose_jacobian * measurement.covariance *
+            pose_jacobian.transpose();
+        pose_covariance =
+            0.5 * (pose_covariance + pose_covariance.transpose());
+        if(!validOutputCovariance(pose_covariance)) {
+            return std::nullopt;
+        }
+
+        nav_msgs::msg::Odometry odometry;
+        odometry.header.stamp = measurement.stamp;
+        odometry.header.frame_id = worldFrameID_;
+        odometry.child_frame_id = bodyFrameID_;
+        odometry.pose.pose = *body_pose;
+
+        for(int row = 0; row < 6; ++row) {
+            for(int column = 0; column < 6; ++column) {
+                const std::size_t index =
+                    static_cast<std::size_t>(row * 6 + column);
+                odometry.pose.covariance[index] =
+                    pose_covariance(row, column);
+            }
+        }
+
+        // The visual pose chain does not estimate velocity. This debug-only
+        // sentinel tells the offline evaluator not to treat the zero-valued
+        // twist fields as measurements.
+        odometry.twist.covariance[0] = -1.0;
+        return odometry;
+    }
+
+    void VIONode::publishVisualOdometryDebug(
+        const VisualPoseMeasurement& measurement)
+    {
+        if(!publishEstimatorDebug_ || !debugVisualOdomPub_) {
+            return;
+        }
+
+        std::optional<geometry_msgs::msg::TransformStamped> imu_from_body;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            imu_from_body = imuFromBody_;
+        }
+        if(!imu_from_body) {
+            return;
+        }
+
+        const auto odometry = visualOdometryFromMeasurement(
+            measurement,
+            *imu_from_body
+        );
+        if(!odometry) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Failed to construct raw visual odometry debug output at %.9f s",
+                measurement.stamp.seconds()
+            );
+            return;
+        }
+
+        debugVisualOdomPub_->publish(*odometry);
+    }
+
     void VIONode::publishEstimatorOutput(
-        const FilterState& filter_state,
+        const FilterState& output_filter_state,
+        const FilterState& predicted_filter_state,
         const std::vector<ImuMeasurement>& imu_measurements)
     {
         if(imu_measurements.size() < std::size_t(2) || !vioOdomPub_) {
@@ -223,7 +336,7 @@ namespace vio_node {
         }
 
         const auto odometry = odometryFromFilterState(
-            filter_state,
+            output_filter_state,
             imu_measurements.back(),
             average_sample_interval_s,
             *imu_from_body
@@ -234,9 +347,30 @@ namespace vio_node {
                 *get_clock(),
                 1000,
                 "Failed to construct valid VIO odometry output at %.9f s",
-                filter_state.nominal_state.stamp.seconds()
+                output_filter_state.nominal_state.stamp.seconds()
             );
             return;
+        }
+
+        if(publishEstimatorDebug_ && debugImuPredictionOdomPub_) {
+            const auto predicted_odometry = odometryFromFilterState(
+                predicted_filter_state,
+                imu_measurements.back(),
+                average_sample_interval_s,
+                *imu_from_body
+            );
+            if(predicted_odometry) {
+                debugImuPredictionOdomPub_->publish(*predicted_odometry);
+            }
+            else {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Failed to construct IMU prediction odometry debug output at %.9f s",
+                    predicted_filter_state.nominal_state.stamp.seconds()
+                );
+            }
         }
 
         vioOdomPub_->publish(*odometry);

@@ -52,6 +52,9 @@ namespace vio_node {
         this->declare_parameter("publish_debug_stereo_features", false);
         publishDebugStereoFeatures_ = this->get_parameter("publish_debug_stereo_features").as_bool();
 
+        this->declare_parameter("publish_estimator_debug", false);
+        publishEstimatorDebug_ = this->get_parameter("publish_estimator_debug").as_bool();
+
         this->declare_parameter("world_frame_id", "vio_odom");
         worldFrameID_ = this->get_parameter("world_frame_id").as_string();
 

@@ -284,8 +284,8 @@ namespace vio_node {
                         "Failed to create visual IMU-pose measurement"
                     );
                 }
-                else {
-                    enqueueVisualPoseMeasurement(*visual_measurement);
+                else if(enqueueVisualPoseMeasurement(*visual_measurement)) {
+                    publishVisualOdometryDebug(*visual_measurement);
                 }
             }
         }

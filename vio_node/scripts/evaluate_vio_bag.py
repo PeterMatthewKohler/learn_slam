@@ -33,6 +33,7 @@ class OdomSample:
     quaternion_xyzw: np.ndarray
     linear_velocity: np.ndarray
     angular_velocity: np.ndarray
+    twist_available: bool
 
 
 @dataclass
@@ -44,6 +45,7 @@ class OdomSeries:
     quaternions_xyzw: np.ndarray
     linear_velocities: np.ndarray
     angular_velocities: np.ndarray
+    twist_available: bool
     duplicate_count: int
 
     def select(self, indices: Sequence[int]) -> "OdomSeries":
@@ -56,6 +58,7 @@ class OdomSeries:
             quaternions_xyzw=self.quaternions_xyzw[selected],
             linear_velocities=self.linear_velocities[selected],
             angular_velocities=self.angular_velocities[selected],
+            twist_available=self.twist_available,
             duplicate_count=self.duplicate_count,
         )
 
@@ -229,10 +232,11 @@ def odom_sample_from_message(message) -> OdomSample:
             message.twist.twist.angular.z,
         ]
     )
+    twist_covariance_marker = float(message.twist.covariance[0])
     if stamp_ns < 0 or not all(
         np.all(np.isfinite(values))
         for values in (position, linear_velocity, angular_velocity)
-    ):
+    ) or not math.isfinite(twist_covariance_marker):
         raise ValueError("odometry message contains invalid timestamp or values")
     return OdomSample(
         stamp_ns=stamp_ns,
@@ -242,6 +246,7 @@ def odom_sample_from_message(message) -> OdomSample:
         quaternion_xyzw=quaternion,
         linear_velocity=linear_velocity,
         angular_velocity=angular_velocity,
+        twist_available=twist_covariance_marker >= 0.0,
     )
 
 
@@ -254,11 +259,14 @@ def finalize_series(samples: List[OdomSample], topic: str) -> OdomSeries:
     ordered = list(by_stamp.values())
     frame_ids = {sample.frame_id for sample in ordered}
     child_frame_ids = {sample.child_frame_id for sample in ordered}
+    twist_availability = {sample.twist_available for sample in ordered}
     if len(frame_ids) != 1 or len(child_frame_ids) != 1:
         raise RuntimeError(
             f"{topic} changes frame IDs: parents={sorted(frame_ids)}, "
             f"children={sorted(child_frame_ids)}"
         )
+    if len(twist_availability) != 1:
+        raise RuntimeError(f"{topic} changes whether twist is available")
     return OdomSeries(
         stamps_ns=np.asarray([sample.stamp_ns for sample in ordered], dtype=np.int64),
         frame_id=ordered[0].frame_id,
@@ -267,6 +275,7 @@ def finalize_series(samples: List[OdomSample], topic: str) -> OdomSeries:
         quaternions_xyzw=np.asarray([sample.quaternion_xyzw for sample in ordered]),
         linear_velocities=np.asarray([sample.linear_velocity for sample in ordered]),
         angular_velocities=np.asarray([sample.angular_velocity for sample in ordered]),
+        twist_available=ordered[0].twist_available,
         duplicate_count=duplicate_count,
     )
 
@@ -557,6 +566,7 @@ def write_plots(
     orientation_errors_deg: np.ndarray,
     linear_velocity_errors: np.ndarray,
     angular_velocity_errors: np.ndarray,
+    twist_metrics_available: bool,
 ) -> None:
     time_s = (estimate.stamps_ns - estimate.stamps_ns[0]).astype(float) * 1e-9
     figure, axis = plt.subplots(figsize=(8, 6))
@@ -587,17 +597,21 @@ def write_plots(
     figure.savefig(output_directory / "pose_errors.png", dpi=150)
     plt.close(figure)
 
-    figure, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    axes[0].plot(time_s, linear_velocity_errors)
-    axes[0].set_ylabel("Linear error [m/s]")
-    axes[0].grid(True)
-    axes[1].plot(time_s, angular_velocity_errors)
-    axes[1].set(xlabel="Time since first match [s]", ylabel="Angular error [rad/s]")
-    axes[1].grid(True)
-    figure.suptitle("Body-Frame Twist Error")
-    figure.tight_layout()
-    figure.savefig(output_directory / "velocity_errors.png", dpi=150)
-    plt.close(figure)
+    if twist_metrics_available:
+        figure, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        axes[0].plot(time_s, linear_velocity_errors)
+        axes[0].set_ylabel("Linear error [m/s]")
+        axes[0].grid(True)
+        axes[1].plot(time_s, angular_velocity_errors)
+        axes[1].set(
+            xlabel="Time since first match [s]",
+            ylabel="Angular error [rad/s]",
+        )
+        axes[1].grid(True)
+        figure.suptitle("Body-Frame Twist Error")
+        figure.tight_layout()
+        figure.savefig(output_directory / "velocity_errors.png", dpi=150)
+        plt.close(figure)
 
 
 def format_statistic_block(name: str, units: str, statistics: Dict[str, float]) -> str:
@@ -666,14 +680,22 @@ def evaluate(arguments: argparse.Namespace) -> Tuple[Dict, str, Path]:
             ]
         )
     )
-    linear_velocity_errors = np.linalg.norm(
-        matched_estimate.linear_velocities - aligned_ground_truth.linear_velocities,
-        axis=1,
+    twist_metrics_available = (
+        matched_estimate.twist_available and ground_truth.twist_available
     )
-    angular_velocity_errors = np.linalg.norm(
-        matched_estimate.angular_velocities - aligned_ground_truth.angular_velocities,
-        axis=1,
-    )
+    if twist_metrics_available:
+        linear_velocity_errors = np.linalg.norm(
+            matched_estimate.linear_velocities - aligned_ground_truth.linear_velocities,
+            axis=1,
+        )
+        angular_velocity_errors = np.linalg.norm(
+            matched_estimate.angular_velocities -
+            aligned_ground_truth.angular_velocities,
+            axis=1,
+        )
+    else:
+        linear_velocity_errors = np.full(matched_estimate.stamps_ns.size, np.nan)
+        angular_velocity_errors = np.full(matched_estimate.stamps_ns.size, np.nan)
     rpe_translation, rpe_rotation_rad, rpe_actual_intervals = relative_pose_errors(
         matched_estimate.stamps_ns,
         matched_estimate.positions,
@@ -711,6 +733,7 @@ def evaluate(arguments: argparse.Namespace) -> Tuple[Dict, str, Path]:
             100.0 * matched_estimate.stamps_ns.size / estimate.stamps_ns.size
         ),
         "invalid_message_counts": invalid_counts,
+        "twist_metrics_available": twist_metrics_available,
         "position_ate_m": scalar_statistics(position_error_norms),
         "orientation_ate_deg": scalar_statistics(orientation_errors_deg),
         "linear_velocity_error_m_s": scalar_statistics(linear_velocity_errors),
@@ -745,6 +768,7 @@ def evaluate(arguments: argparse.Namespace) -> Tuple[Dict, str, Path]:
             orientation_errors_deg,
             linear_velocity_errors,
             angular_velocity_errors,
+            twist_metrics_available,
         )
     with (output_directory / "summary.json").open("w", encoding="utf-8") as output_file:
         json.dump(summary, output_file, indent=2)

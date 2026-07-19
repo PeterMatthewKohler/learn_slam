@@ -7,6 +7,7 @@ vio_node:
     right_camera_info_sub_topic_name: "/front_stereo_camera/right/camera_info"
     vio_pub_topic_name: "/vio/odom"
     publish_debug_stereo_features: true
+    publish_estimator_debug: true
     world_frame_id: "vio_odom"
     body_frame_id: "base_link"
     imu_frame_id: "chassis_imu"

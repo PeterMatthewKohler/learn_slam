@@ -274,6 +274,19 @@ Odometry is currently published at processed visual timestamps. An accepted
 visual update publishes the corrected state. A rejected or unusable visual
 update publishes the valid IMU prediction retained at the same timestamp.
 
+When `publish_estimator_debug` is enabled, two additional odometry streams make
+it possible to isolate frontend and filter behavior:
+
+```text
+/debug/visual_odom          raw chained stereo pose before EKF correction
+/debug/imu_prediction_odom IMU-propagated EKF state before visual correction
+```
+
+Both use the same `vio_odom -> base_link` pose convention as `/vio/odom`. The
+prediction stream has a complete pose and twist. The raw visual chain estimates
+pose only, so its twist is zero-filled and `twist.covariance[0]` is set to
+`-1.0` as a debug-stream unavailable marker.
+
 When `publish_tf` is enabled, the node broadcasts the matching
 `vio_odom -> base_link` transform. It must remain disabled while another TF
 branch already owns `base_link`, such as the simulator's ground-truth
@@ -281,11 +294,30 @@ branch already owns `base_link`, such as the simulator's ground-truth
 
 ## Offline Accuracy Evaluation
 
-Record the estimator output, ground truth, and inputs needed to reproduce a run:
+For routine accuracy measurements, record only the estimator outputs and ground
+truth. The evaluator uses message header timestamps, so the image and IMU inputs
+are not required:
 
 ```bash
-ros2 bag record -o vio_accuracy \
+ros2 bag record -o bags/vio_accuracy \
   /vio/odom \
+  /debug/visual_odom \
+  /debug/imu_prediction_odom \
+  /chassis/odom \
+  /clock
+```
+
+When the exact sensor inputs are needed to reproduce or reprocess a run, record
+a full replay bag with lossless Zstd file compression:
+
+```bash
+ros2 bag record \
+  --compression-mode file \
+  --compression-format zstd \
+  -o bags/vio_replay \
+  /vio/odom \
+  /debug/visual_odom \
+  /debug/imu_prediction_odom \
   /chassis/odom \
   /clock \
   /chassis/imu \
@@ -296,11 +328,34 @@ ros2 bag record -o vio_accuracy \
   /tf_static
 ```
 
+File compression avoids adding per-message compression work to the live VIO
+pipeline, but the uncompressed database exists while recording and is compressed
+when recording stops. Wait for `ros2 bag record` to finish finalizing the bag
+before using it.
+
 The installed `evaluate_vio_bag.py` script compares the two odometry streams
 without exposing ground truth to the estimator. It reads message header
 timestamps, interpolates ground truth at each estimator timestamp, and aligns
 the independent world frames using their first matched poses. The alignment is
 rigid SE(3); it never rescales the stereo trajectory.
+
+Record the two debug topics alongside `/vio/odom` to determine whether an error
+originates in the visual frontend, IMU propagation, or EKF correction. Each can
+be evaluated by selecting it as the estimate topic and using a separate output
+directory:
+
+```bash
+ros2 run vio_node evaluate_vio_bag.py bags/vio_accuracy \
+  --estimate-topic /debug/visual_odom \
+  --output-dir bags/vio_accuracy/evaluation_visual
+
+ros2 run vio_node evaluate_vio_bag.py bags/vio_accuracy \
+  --estimate-topic /debug/imu_prediction_odom \
+  --output-dir bags/vio_accuracy/evaluation_prediction
+```
+
+The evaluator recognizes the raw visual stream's unavailable-twist marker and
+omits velocity statistics and `velocity_errors.png` for that stream.
 
 Run it after building and sourcing the workspace:
 
@@ -313,7 +368,8 @@ The default `bags/vio_accuracy/evaluation` directory contains:
 - `summary.txt` and `summary.json` with ATE, orientation, twist, RPE, drift, and
   timing statistics.
 - `aligned_samples.csv` with every timestamp-aligned sample and error.
-- `trajectory_xy.png`, `pose_errors.png`, and `velocity_errors.png`.
+- `trajectory_xy.png`, `pose_errors.png`, and, when twist is available,
+  `velocity_errors.png`.
 
 Useful options include:
 

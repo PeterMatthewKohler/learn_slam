@@ -22,6 +22,18 @@ namespace vio_node {
         // Initialize publishers and subscribers
         // Publishers
         vioOdomPub_ = this->create_publisher<nav_msgs::msg::Odometry>(vioPubTopicName_, 10);
+        if(publishEstimatorDebug_) {
+            debugVisualOdomPub_ =
+                this->create_publisher<nav_msgs::msg::Odometry>(
+                    "debug/visual_odom",
+                    10
+                );
+            debugImuPredictionOdomPub_ =
+                this->create_publisher<nav_msgs::msg::Odometry>(
+                    "debug/imu_prediction_odom",
+                    10
+                );
+        }
         if(publishDebugStereoFeatures_){debugStereoFeaturePub_ = 
                                             this->create_publisher<sensor_msgs::msg::Image>("debug/StereoFeatures", 10);}
         // Subscribers

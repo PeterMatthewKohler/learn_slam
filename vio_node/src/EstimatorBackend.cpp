@@ -626,6 +626,7 @@ namespace vio_node {
                 );
                 publishEstimatorOutput(
                     *propagated_filter_state,
+                    *propagated_filter_state,
                     *imu_measurements
                 );
                 continue;
@@ -672,6 +673,7 @@ namespace vio_node {
                 );
                 publishEstimatorOutput(
                     *propagated_filter_state,
+                    *propagated_filter_state,
                     *imu_measurements
                 );
                 continue;
@@ -710,6 +712,7 @@ namespace vio_node {
             );
             publishEstimatorOutput(
                 visual_correction->corrected_filter_state,
+                *propagated_filter_state,
                 *imu_measurements
             );
         }

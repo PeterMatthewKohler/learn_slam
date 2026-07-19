@@ -43,6 +43,8 @@ namespace vio_node {
         void initPubSubs(); // Helper function
         // Publishers
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr vioOdomPub_;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr debugVisualOdomPub_;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr debugImuPredictionOdomPub_;
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debugStereoFeaturePub_;
         // Subscribers
         // IMU
@@ -154,8 +156,14 @@ namespace vio_node {
             const ImuMeasurement& imu_measurement,
             double imu_sample_interval_s,
             const geometry_msgs::msg::TransformStamped& imu_from_body) const;
+        std::optional<nav_msgs::msg::Odometry> visualOdometryFromMeasurement(
+            const VisualPoseMeasurement& measurement,
+            const geometry_msgs::msg::TransformStamped& imu_from_body) const;
+        void publishVisualOdometryDebug(
+            const VisualPoseMeasurement& measurement);
         void publishEstimatorOutput(
-            const FilterState& filter_state,
+            const FilterState& output_filter_state,
+            const FilterState& predicted_filter_state,
             const std::vector<ImuMeasurement>& imu_measurements);
 
         // --- TF2 ---
@@ -207,6 +215,7 @@ namespace vio_node {
         std::string rightCameraInfoSubTopicName_;
         std::string vioPubTopicName_;
         bool publishDebugStereoFeatures_;
+        bool publishEstimatorDebug_;
         std::string worldFrameID_;
         std::string bodyFrameID_;
         std::string imuFrameID_;
