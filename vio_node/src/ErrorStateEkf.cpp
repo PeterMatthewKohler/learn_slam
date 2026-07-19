@@ -467,4 +467,42 @@ namespace vio_node::error_state_ekf {
         return output;
     }
 
+    std::optional<ErrorStateCovariance> computePosteriorErrorStateCovariance(
+        const ErrorStateCovariance& prior_covariance,
+        const VisualPoseLinearization& linearization,
+        const VisualPoseUpdateTerms& update_terms)
+    {
+        // Validate
+        // prior_covariance is finite, symmetric and positive-definite
+        if(!validErrorStateCovariance(prior_covariance)){return std::nullopt;}
+        // Jacobian(H) and Kalman gain(K) are finite
+        if(!linearization.jacobian.allFinite() ||
+           !update_terms.kalman_gain.allFinite()){return std::nullopt;}
+        // Validate measurement covariance
+        if(!validVisualPoseCovariance(linearization.measurement_covariance)){return std::nullopt;}
+        // innovation covariance(S) is finite, symmetric, and positive-definite
+        if(!validVisualPoseCovariance(update_terms.innovation_covariance)) {return std::nullopt;}
+        // Error state correction (delta_x) is valid
+        if(!update_terms.error_state_correction.allFinite()){return std::nullopt;}
+        // Calculate update matrix: A = I - K * H
+        const ErrorStateCovariance update_matrix =
+            ErrorStateCovariance::Identity() -
+            update_terms.kalman_gain * linearization.jacobian;
+        if(!update_matrix.allFinite()){return std::nullopt;}
+        // Calculate posterior error state covariance (P_post)
+        // P_post = A * P_prior * A^T + K * R * K^T  <-- Joseph Form
+        // Joseph form better preserves covariance symmetry and positive
+        // semidefiniteness under floating point error.
+        ErrorStateCovariance posterior_covariance =
+            update_matrix * prior_covariance * update_matrix.transpose() +
+            update_terms.kalman_gain * linearization.measurement_covariance *
+                update_terms.kalman_gain.transpose();
+        // Enforce numerical symmetry
+        posterior_covariance = 0.5 * (posterior_covariance +
+                               posterior_covariance.transpose());
+        // Validate posterior covariance
+        if(!validErrorStateCovariance(posterior_covariance)){return std::nullopt;}
+        return posterior_covariance;
+    }
+
 }  // namespace vio_node::error_state_ekf
