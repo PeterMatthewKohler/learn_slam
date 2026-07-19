@@ -54,25 +54,13 @@ namespace {
             covariance_llt(covariance);
         return covariance_llt.info() == Eigen::Success;
     }
-
-    bool validEstimatorState(const vio_node::EstimatorState& state)
-    {
-        if(!vio_node::validation::isFinite(state.position_world_imu) ||
-           !vio_node::validation::isFinite(state.velocity_world_imu) ||
-           !vio_node::validation::isFinite(state.gyroscope_bias) ||
-           !vio_node::validation::isFinite(state.accelerometer_bias) ||
-           !vio_node::validation::isUnitQuaternion(state.world_from_imu)) {
-            return false;
-        }
-        return true;
-    }
 }  // namespace
 
 namespace vio_node::error_state_ekf {
     bool validateFilterState(const FilterState& filter_state)
     {
         const EstimatorState& nominal_state = filter_state.nominal_state;
-        if(!validEstimatorState(nominal_state)){return false;}
+        if(!validation::isValidEstimatorState(nominal_state)){return false;}
 
         return validErrorStateCovariance(filter_state.covariance);
     }
@@ -285,7 +273,7 @@ namespace vio_node::error_state_ekf {
         // Require current filter state is valid
         if(!validateFilterState(current_filter_state)){return std::nullopt;}
         // validate estimator state
-        if(!validEstimatorState(propagated_nominal_state)){return std::nullopt;}
+        if(!validation::isValidEstimatorState(propagated_nominal_state)){return std::nullopt;}
         // Start and end measurement timestamps uses same clock
         if(!validation::useSameClock(start_measurement.stamp, end_measurement.stamp)){return std::nullopt;}
         // Current state and start_measurement use same clock and have same timestamp
@@ -320,8 +308,7 @@ namespace vio_node::error_state_ekf {
                 0.5,
                 propagated_nominal_state.world_from_imu
             );
-        if(!validation::isUnitQuaternion(world_from_imu_mid)){return std::nullopt;}
-        world_from_imu_mid.normalize();
+        if(!validation::normalizeQuaternion(world_from_imu_mid)){return std::nullopt;}
         // Linearize our non-linear error state model
         const auto linearization = buildContinuousTimeLinearization(
             world_from_imu_mid,
@@ -370,8 +357,7 @@ namespace vio_node::error_state_ekf {
             measurement.world_from_imu;
         // Because error is right-multiplicative
         q_error = validation::canonicalize(q_error);
-        if(!validation::isUnitQuaternion(q_error)){return std::nullopt;}
-        q_error.normalize();
+        if(!validation::normalizeQuaternion(q_error)){return std::nullopt;}
         // Convert to rotation vector
         const Eigen::AngleAxisd angle_axis(q_error);
         const Eigen::Vector3d orientation_residual =
@@ -561,25 +547,16 @@ namespace vio_node::error_state_ekf {
                 Eigen::AngleAxisd(delta_angle, delta_orientation / delta_angle)
             );
         }
-        const double delta_squared_norm = delta_quaternion.squaredNorm();
-        if(!validation::isFinite(delta_quaternion) ||
-           !std::isfinite(delta_squared_norm) ||
-           delta_squared_norm < 1e-12) {
+        if(!validation::normalizeQuaternion(delta_quaternion)) {
             return std::nullopt;
         }
-        delta_quaternion.normalize();
 
         Eigen::Quaterniond corrected_orientation =
             predicted_filter_state.nominal_state.world_from_imu *
             delta_quaternion;
-        const double corrected_squared_norm =
-            corrected_orientation.squaredNorm();
-        if(!validation::isFinite(corrected_orientation) ||
-           !std::isfinite(corrected_squared_norm) ||
-           corrected_squared_norm < 1e-12) {
+        if(!validation::normalizeQuaternion(corrected_orientation)) {
             return std::nullopt;
         }
-        corrected_orientation.normalize();
         corrected_filter_state.nominal_state.world_from_imu =
             corrected_orientation;
         // Velocity

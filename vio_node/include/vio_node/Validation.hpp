@@ -1,6 +1,8 @@
 #ifndef VALIDATION_HPP
 #define VALIDATION_HPP
 
+#include "vio_node/EstimatorTypes.hpp"
+
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <rclcpp/time.hpp>
@@ -126,6 +128,29 @@ namespace validation {
         }
         return canonical;
     }
+
+    inline bool normalizeQuaternion(Eigen::Quaterniond& quaternion)
+    {
+        const double squared_norm = quaternion.squaredNorm();
+        if(!isFinite(quaternion) ||
+           !std::isfinite(squared_norm) ||
+           squared_norm < 1e-12) {
+            return false;
+        }
+
+        quaternion.normalize();
+        return isUnitQuaternion(quaternion);
+    }
+
+    inline bool isValidEstimatorState(const EstimatorState& state)
+    {
+        return isFinite(state.position_world_imu) &&
+            isFinite(state.velocity_world_imu) &&
+            isFinite(state.gyroscope_bias) &&
+            isFinite(state.accelerometer_bias) &&
+            isUnitQuaternion(state.world_from_imu);
+    }
+
 }  // namespace validation
 }  // namespace vio_node
 

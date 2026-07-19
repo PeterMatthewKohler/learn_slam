@@ -259,14 +259,7 @@ namespace vio_node {
             Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
             Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
 
-        const double squared_norm = world_from_imu.squaredNorm();
-        if(!validation::isFinite(world_from_imu) ||
-           !std::isfinite(squared_norm) ||
-           squared_norm < 1e-12) {
-            return std::nullopt;
-        }
-        world_from_imu.normalize();
-        if(!validation::isUnitQuaternion(world_from_imu)) {
+        if(!validation::normalizeQuaternion(world_from_imu)) {
             return std::nullopt;
         }
 

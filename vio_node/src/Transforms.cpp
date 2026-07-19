@@ -287,4 +287,44 @@ namespace vio_node {
         }
         return output;
     }
+
+    std::optional<geometry_msgs::msg::Pose> VIONode::bodyPoseFromEstimatorState(
+        const EstimatorState& state,
+        const geometry_msgs::msg::TransformStamped& imu_from_body) const
+    {
+        // Validate inputs
+        if(!validation::isValidEstimatorState(state) ||
+           imu_from_body.header.frame_id != imuFrameID_ ||  // Parent
+           imu_from_body.child_frame_id != bodyFrameID_ || // Child
+           !validation::isFinite(imu_from_body.transform.translation) ||
+           !validation::isFinite(imu_from_body.transform.rotation) ||
+           !validation::isUnitQuaternion(imu_from_body.transform.rotation)){return std::nullopt;}
+
+        // q_WB = q_WI * q_I_B
+        Eigen::Quaterniond q_I_B = Eigen::Quaterniond(imu_from_body.transform.rotation.w,
+                                                      imu_from_body.transform.rotation.x,
+                                                      imu_from_body.transform.rotation.y,
+                                                      imu_from_body.transform.rotation.z);
+        if(!validation::normalizeQuaternion(q_I_B)){return std::nullopt;}
+        Eigen::Quaterniond q_WB = state.world_from_imu * q_I_B;
+        if(!validation::normalizeQuaternion(q_WB)){return std::nullopt;}
+        // p_WB = p_WI + q_WI * p_I_B
+        Eigen::Vector3d p_I_B = Eigen::Vector3d(imu_from_body.transform.translation.x,
+                                                imu_from_body.transform.translation.y,
+                                                imu_from_body.transform.translation.z);
+        Eigen::Vector3d p_WB = state.position_world_imu +
+                                state.world_from_imu * p_I_B;
+        // Validate
+        if(!p_WB.allFinite()){return std::nullopt;}
+        geometry_msgs::msg::Pose pose;
+        pose.position.x = p_WB.x();
+        pose.position.y = p_WB.y();
+        pose.position.z = p_WB.z();
+        pose.orientation.x = q_WB.x();
+        pose.orientation.y = q_WB.y();
+        pose.orientation.z = q_WB.z();
+        pose.orientation.w = q_WB.w();
+
+        return pose;
+    }
 }  // namespace vio_node

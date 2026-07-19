@@ -93,23 +93,15 @@ namespace vio_node {
             );
         }
 
-        const double delta_squared_norm = delta_quaternion.squaredNorm();
-        if(!validation::isFinite(delta_quaternion) ||
-           !std::isfinite(delta_squared_norm) ||
-           delta_squared_norm < 1e-12) {
+        if(!validation::normalizeQuaternion(delta_quaternion)) {
             return std::nullopt;
         }
-        delta_quaternion.normalize();
 
         Eigen::Quaterniond world_from_imu_next =
             state.world_from_imu * delta_quaternion;
-        const double next_squared_norm = world_from_imu_next.squaredNorm();
-        if(!validation::isFinite(world_from_imu_next) ||
-           !std::isfinite(next_squared_norm) ||
-           next_squared_norm < 1e-12) {
+        if(!validation::normalizeQuaternion(world_from_imu_next)) {
             return std::nullopt;
         }
-        world_from_imu_next.normalize();
         next.world_from_imu = world_from_imu_next;
 
         const Eigen::Vector3d acceleration_start_world =

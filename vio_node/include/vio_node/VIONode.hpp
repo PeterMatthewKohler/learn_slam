@@ -168,6 +168,9 @@ namespace vio_node {
         bool transformToOpenCV(const geometry_msgs::msg::TransformStamped& transform,
                                cv::Matx33d& rotation_target_from_source,
                                cv::Vec3d& translation_target_from_source) const;
+        std::optional<geometry_msgs::msg::Pose> bodyPoseFromEstimatorState(
+            const EstimatorState& state,
+            const geometry_msgs::msg::TransformStamped& imu_from_body) const;
         // Internal states
         std::deque<sensor_msgs::msg::Imu> imuBuffer_;   // Front is latest, back is oldest
         std::optional<EstimatorContext> estimatorContext_;
