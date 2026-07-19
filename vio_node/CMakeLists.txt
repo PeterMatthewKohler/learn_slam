@@ -71,6 +71,10 @@ install(TARGETS VIONode_exe
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS scripts/evaluate_vio_bag.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install parameter files
 install(DIRECTORY params
   DESTINATION share/${PROJECT_NAME}

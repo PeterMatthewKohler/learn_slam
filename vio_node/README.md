@@ -279,6 +279,50 @@ When `publish_tf` is enabled, the node broadcasts the matching
 branch already owns `base_link`, such as the simulator's ground-truth
 `odom -> base_link` transform.
 
+## Offline Accuracy Evaluation
+
+Record the estimator output, ground truth, and inputs needed to reproduce a run:
+
+```bash
+ros2 bag record -o vio_accuracy \
+  /vio/odom \
+  /chassis/odom \
+  /clock \
+  /chassis/imu \
+  /front_stereo_camera/left/image_raw \
+  /front_stereo_camera/right/image_raw \
+  /front_stereo_camera/left/camera_info \
+  /front_stereo_camera/right/camera_info \
+  /tf_static
+```
+
+The installed `evaluate_vio_bag.py` script compares the two odometry streams
+without exposing ground truth to the estimator. It reads message header
+timestamps, interpolates ground truth at each estimator timestamp, and aligns
+the independent world frames using their first matched poses. The alignment is
+rigid SE(3); it never rescales the stereo trajectory.
+
+Run it after building and sourcing the workspace:
+
+```bash
+ros2 run vio_node evaluate_vio_bag.py bags/vio_accuracy
+```
+
+The default `bags/vio_accuracy/evaluation` directory contains:
+
+- `summary.txt` and `summary.json` with ATE, orientation, twist, RPE, drift, and
+  timing statistics.
+- `aligned_samples.csv` with every timestamp-aligned sample and error.
+- `trajectory_xy.png`, `pose_errors.png`, and `velocity_errors.png`.
+
+Useful options include:
+
+```bash
+ros2 run vio_node evaluate_vio_bag.py bags/vio_accuracy \
+  --max-interpolation-gap-s 0.1 \
+  --rpe-interval-s 1.0
+```
+
 ## Code Organization
 
 The ROS node owns subscriptions, publishers, configuration, and synchronized
