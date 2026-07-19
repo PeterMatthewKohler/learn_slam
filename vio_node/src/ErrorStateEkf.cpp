@@ -43,6 +43,18 @@ namespace {
         return covariance_llt.info() == Eigen::Success;
     }
 
+    bool validVisualPoseCovariance(
+        const vio_node::VisualPoseInnovationCovariance& covariance)
+    {
+        if(!covariance.allFinite() ||
+           !covariance.isApprox(covariance.transpose(), 1e-12)) {
+            return false;
+        }
+        const Eigen::LLT<vio_node::VisualPoseInnovationCovariance>
+            covariance_llt(covariance);
+        return covariance_llt.info() == Eigen::Success;
+    }
+
     bool validEstimatorState(const vio_node::EstimatorState& state)
     {
         if(!vio_node::validation::isFinite(state.position_world_imu) ||
@@ -344,18 +356,7 @@ namespace vio_node::error_state_ekf {
         if(!validateFilterState(filter_state)){return std::nullopt;}
         if(!validation::isFinite(measurement.position_world_imu) ||
            !validation::isUnitQuaternion(measurement.world_from_imu) ||
-           !measurement.covariance.allFinite() ||
-           !measurement.covariance.isApprox(
-               measurement.covariance.transpose(),
-               1e-12)) {
-            return std::nullopt;
-        }
-
-        const Eigen::LLT<Eigen::Matrix<double, 6, 6>> covariance_llt(
-            measurement.covariance
-        );
-        // Validates covariance finiteness, symmetry, and positive definiteness
-        if(covariance_llt.info() != Eigen::Success){return std::nullopt;}
+           !validVisualPoseCovariance(measurement.covariance)){return std::nullopt;}
         // State and measurement use same clock and have equal timestamps
         if(!validation::useSameClock(filter_state.nominal_state.stamp,
                                      measurement.stamp) ||
@@ -397,6 +398,72 @@ namespace vio_node::error_state_ekf {
         output.residual = residual;
         output.jacobian = H;
         output.measurement_covariance = measurement.covariance;
+        return output;
+    }
+
+    std::optional<VisualPoseUpdateTerms> computeVisualPoseUpdateTerms(
+        const FilterState& filter_state,
+        const VisualPoseLinearization& linearization)
+    {
+        // Validate filter state
+        if(!validateFilterState(filter_state)){return std::nullopt;}
+        // Validate residual, H, and R
+        if(!linearization.residual.allFinite() ||
+           !linearization.jacobian.allFinite() ||
+           !validVisualPoseCovariance(
+               linearization.measurement_covariance)){return std::nullopt;}
+        // Project the 15x15 state covariance into measurement space.
+        // P is 15x15 and H^T is 15x6, so Pht is 15x6. It describes
+        // the covariance between each error-state component and each
+        // component of the six-dimensional visual pose residual.
+        const Eigen::Matrix<
+            double,
+            error_state::state_size,
+            visual_pose::residual_size> Pht =
+                filter_state.covariance * linearization.jacobian.transpose();
+        if(!Pht.allFinite()){return std::nullopt;}
+        // Innovation covariance: S = H * P * H^T + R.
+        // S is 6x6 and represents the expected uncertainty of the visual
+        // residual using both predicted state uncertainty and measurement
+        // uncertainty. A larger S causes the filter to trust the residual less.
+        VisualPoseInnovationCovariance S =
+            linearization.jacobian * Pht +
+            linearization.measurement_covariance;
+        // Enforce numerical symmetry before factorization
+        S = 0.5 * (S + S.transpose());
+        if(!validVisualPoseCovariance(S)){return std::nullopt;}
+        // The Kalman gain is K = Pht * S^-1, where K is 15x6. Forming
+        // S.inverse() directly would be less numerically stable and would do
+        // more work than solving a linear system with the LLT factorization.
+        Eigen::LLT<VisualPoseInnovationCovariance> innovation_llt(S);
+        if(innovation_llt.info() != Eigen::Success){return std::nullopt;}
+
+        // Eigen solves equations with the unknown on the right: S * X = B.
+        // Transposing the Kalman gain equation gives:
+        //
+        //   K^T = (Pht * S^-1)^T = S^-1 * Pht^T
+        //
+        // because S is symmetric. Therefore we solve:
+        //
+        //   S * K^T = Pht^T
+        //
+        // The solve returns the 6x15 matrix K^T, which is transposed below.
+        const Eigen::Matrix<
+            double,
+            visual_pose::residual_size,
+            error_state::state_size> kalman_gain_transpose =
+                innovation_llt.solve(Pht.transpose());
+        if(innovation_llt.info() != Eigen::Success ||
+           !kalman_gain_transpose.allFinite()){return std::nullopt;}
+        const VisualPoseKalmanGain K = kalman_gain_transpose.transpose();
+        // Apply Kalman gain to get state correction: dx = K * r
+        const ErrorStateVector dx = K * linearization.residual;
+        if(!K.allFinite() || !dx.allFinite()){return std::nullopt;}
+
+        VisualPoseUpdateTerms output;
+        output.innovation_covariance = S;
+        output.kalman_gain = K;
+        output.error_state_correction = dx;
         return output;
     }
 

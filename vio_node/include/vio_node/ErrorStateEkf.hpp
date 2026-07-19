@@ -40,6 +40,10 @@ namespace vio_node::error_state_ekf {
         const FilterState& filter_state,
         const VisualPoseMeasurement& measurement);
 
+    std::optional<VisualPoseUpdateTerms> computeVisualPoseUpdateTerms(
+        const FilterState& filter_state,
+        const VisualPoseLinearization& linearization);
+
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP

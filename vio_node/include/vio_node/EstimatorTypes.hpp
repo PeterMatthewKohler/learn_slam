@@ -145,6 +145,23 @@ namespace vio_node {
         Eigen::Matrix<double, 6, 6> measurement_covariance;
     };
 
+    using VisualPoseInnovationCovariance =
+        Eigen::Matrix<double, visual_pose::residual_size,
+                                visual_pose::residual_size>;
+
+    using VisualPoseKalmanGain =
+        Eigen::Matrix<double, error_state::state_size,
+                                visual_pose::residual_size>;
+
+    struct VisualPoseUpdateTerms {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        VisualPoseInnovationCovariance innovation_covariance;
+        VisualPoseKalmanGain kalman_gain;
+        ErrorStateVector error_state_correction;
+    };
+
+
 }  // namespace vio_node
 
 #endif  // ESTIMATOR_TYPES_HPP
