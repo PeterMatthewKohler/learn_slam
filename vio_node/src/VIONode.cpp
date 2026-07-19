@@ -245,7 +245,9 @@ namespace vio_node {
         // Construct corrected timestamp
         const rclcpp::Time camera_stamp(midpoint_ns, left_stamp.get_clock_type());
         const rclcpp::Time visual_stamp = camera_stamp + rclcpp::Duration::from_seconds(cameraIMUTimeOffsetS_);
-        // Reject if our visual stamp is before last accepted visual stamp
+        // Reject backward timestamps using every accepted stereo pair, but
+        // compare the processing interval against only the last pair that
+        // passed this decimation guard.
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             if(lastVisualStamp_ && visual_stamp <= lastVisualStamp_.value()) {
@@ -258,6 +260,16 @@ namespace vio_node {
                 return;
             }
             lastVisualStamp_.emplace(visual_stamp);
+
+            if(lastProcessedVisualStamp_) {
+                const double time_since_last_processed_s =
+                    (visual_stamp - *lastProcessedVisualStamp_).seconds();
+                if(time_since_last_processed_s <
+                   stereoProcessingIntervalS_) {
+                    return;
+                }
+            }
+            lastProcessedVisualStamp_.emplace(visual_stamp);
         }
 
         // Rectify the stereo pair of images

@@ -180,6 +180,13 @@ t_k = t_camera + camera_imu_time_offset_sec
 A positive time offset moves the visual measurement later relative to the IMU
 clock. The initial configured offset is zero.
 
+`stereo_processing_interval_s` sets the minimum time between stereo pairs sent
+through rectification, tracking, and visual pose estimation. Pairs inside the
+interval are skipped before image conversion, while IMU collection continues at
+the sensor rate. A value of `0.0` disables decimation. The current experimental
+value of `0.08 s` produces approximately 12 Hz visual processing from a 60 Hz
+camera and gives consecutive-frame PnP a larger motion baseline.
+
 For each accepted visual frame, the estimator:
 
 1. Integrate every IMU measurement over `(t_(k-1), t_k]`.
@@ -296,7 +303,8 @@ branch already owns `base_link`, such as the simulator's ground-truth
 
 For routine accuracy measurements, record only the estimator outputs and ground
 truth. The evaluator uses message header timestamps, so the image and IMU inputs
-are not required:
+are not required. Run the recording commands from the workspace root so the bag
+is created under the existing `bags/` directory:
 
 ```bash
 ros2 bag record -o bags/vio_accuracy \

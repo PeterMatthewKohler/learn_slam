@@ -15,6 +15,7 @@ vio_node:
     right_camera_frame_id: "front_stereo_camera_right_rgb"
     publish_tf: false
     camera_imu_time_offset_sec: 0.0
+    stereo_processing_interval_s: 0.08
     imu_msg_gap_threshold_s: 0.05
     imu_msg_buffer_window_s: 10.0
     imu_initialization_window_s: 2.0

@@ -77,6 +77,15 @@ namespace vio_node {
         cameraIMUTimeOffsetS_ = this->get_parameter("camera_imu_time_offset_sec").as_double();
         if (!std::isfinite(cameraIMUTimeOffsetS_)) {throw std::invalid_argument("camera_imu_time_offset_sec must be finite");}
 
+        this->declare_parameter("stereo_processing_interval_s", 0.0);
+        stereoProcessingIntervalS_ =
+            this->get_parameter("stereo_processing_interval_s").as_double();
+        if(!std::isfinite(stereoProcessingIntervalS_) ||
+           stereoProcessingIntervalS_ < 0.0) {
+            throw std::invalid_argument(
+                "stereo_processing_interval_s must be finite and nonnegative");
+        }
+
         this->declare_parameter("imu_msg_gap_threshold_s", 0.05);
         imuMsgGapThresholdS_ = this->get_parameter("imu_msg_gap_threshold_s").as_double();
         requireFinitePositive(imuMsgGapThresholdS_, "imu_msg_gap_threshold_s");
