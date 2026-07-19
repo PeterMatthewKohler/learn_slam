@@ -608,4 +608,59 @@ namespace vio_node::error_state_ekf {
         return corrected_filter_state;
     }
 
+    std::optional<VisualPoseCorrectionResult> correctFilterStateWithVisualPose(
+        const FilterState& predicted_filter_state,
+        const VisualPoseMeasurement& measurement)
+    {
+        // Linearize the visual measurement model around the predicted state
+        const auto linearization = buildVisualPoseLinearization(
+            predicted_filter_state,
+            measurement
+        );
+        if(!linearization){return std::nullopt;}
+        // Ensure linearization terms remain finite
+        if(!linearization->residual.allFinite() ||
+           !linearization->jacobian.allFinite() ||
+           !validVisualPoseCovariance(
+               linearization->measurement_covariance)){return std::nullopt;}
+        // Calculate our innovation covariance, kalman gain and state corrections
+        const auto update_terms = computeVisualPoseUpdateTerms(
+            predicted_filter_state,
+            *linearization
+        );
+        if(!update_terms){return std::nullopt;}
+        if(!validVisualPoseCovariance(
+               update_terms->innovation_covariance) ||
+           !update_terms->kalman_gain.allFinite() ||
+           !update_terms->error_state_correction.allFinite()){return std::nullopt;}
+        // Calculate our posterior covariance
+        const auto posterior_covariance = computePosteriorErrorStateCovariance(
+            predicted_filter_state.covariance,
+            *linearization,
+            *update_terms
+        );
+        if(!posterior_covariance){return std::nullopt;}
+        // Compute our corrected filter state
+        const auto corrected_filter_state = injectErrorStateCorrection(
+            predicted_filter_state,
+            update_terms->error_state_correction,
+            *posterior_covariance
+        );
+        if(!corrected_filter_state){return std::nullopt;}
+        // Validate
+        if(!validateFilterState(*corrected_filter_state) ||
+           !validation::useSameClock(
+               corrected_filter_state->nominal_state.stamp,
+               measurement.stamp) ||
+           corrected_filter_state->nominal_state.stamp != measurement.stamp) {
+            return std::nullopt;
+        }
+
+        VisualPoseCorrectionResult result;
+        result.corrected_filter_state = *corrected_filter_state;
+        result.linearization = *linearization;
+        result.update_terms = *update_terms;
+        return result;
+    }
+
 }  // namespace vio_node::error_state_ekf

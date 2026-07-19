@@ -161,6 +161,13 @@ namespace vio_node {
         ErrorStateVector error_state_correction;
     };
 
+    struct VisualPoseCorrectionResult {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        FilterState corrected_filter_state;
+        VisualPoseLinearization linearization;
+        VisualPoseUpdateTerms update_terms;
+    };
 
 }  // namespace vio_node
 
