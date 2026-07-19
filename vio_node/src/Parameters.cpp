@@ -251,5 +251,15 @@ namespace vio_node {
             visualOrientationStddevRad_,
             "visual_orientation_stddev_rad"
         );
+
+        this->declare_parameter("visual_innovation_gate_chi2", 50.0);
+        visualInnovationGateChi2_ =
+            this->get_parameter("visual_innovation_gate_chi2").as_double();
+        if(!std::isfinite(visualInnovationGateChi2_) ||
+           visualInnovationGateChi2_ <= 0.0) {
+            throw std::invalid_argument(
+                "visual_innovation_gate_chi2 must be finite and positive");
+        }
+
     }
 }   // namespace vio_node

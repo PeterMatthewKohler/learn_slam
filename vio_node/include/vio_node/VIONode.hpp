@@ -215,6 +215,7 @@ namespace vio_node {
         std::size_t visualMeasurementQueueMaxSize_;
         double visualPositionStddevM_;
         double visualOrientationStddevRad_;
+        double visualInnovationGateChi2_;
     };
 
 }   // namespace vio_node

@@ -156,6 +156,7 @@ namespace vio_node {
     struct VisualPoseUpdateTerms {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+        double normalized_innovation_squared;
         VisualPoseInnovationCovariance innovation_covariance;
         VisualPoseKalmanGain kalman_gain;
         ErrorStateVector error_state_correction;

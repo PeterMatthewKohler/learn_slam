@@ -437,7 +437,15 @@ namespace vio_node::error_state_ekf {
         // more work than solving a linear system with the LLT factorization.
         Eigen::LLT<VisualPoseInnovationCovariance> innovation_llt(S);
         if(innovation_llt.info() != Eigen::Success){return std::nullopt;}
-
+        // Calculate the NIS score: NIS = r^T * S^-1 * r
+        const VisualPoseResidual innovation_solution =
+            innovation_llt.solve(linearization.residual);
+        if(innovation_llt.info() != Eigen::Success ||
+           !innovation_solution.allFinite()){return std::nullopt;}
+        const double normalized_innovation_squared =
+            linearization.residual.dot(innovation_solution);
+        if(!std::isfinite(normalized_innovation_squared) ||
+           normalized_innovation_squared < 0){return std::nullopt;}
         // Eigen solves equations with the unknown on the right: S * X = B.
         // Transposing the Kalman gain equation gives:
         //
@@ -461,6 +469,7 @@ namespace vio_node::error_state_ekf {
         if(!K.allFinite() || !dx.allFinite()){return std::nullopt;}
 
         VisualPoseUpdateTerms output;
+        output.normalized_innovation_squared = normalized_innovation_squared;
         output.innovation_covariance = S;
         output.kalman_gain = K;
         output.error_state_correction = dx;
@@ -629,8 +638,9 @@ namespace vio_node::error_state_ekf {
             *linearization
         );
         if(!update_terms){return std::nullopt;}
-        if(!validVisualPoseCovariance(
-               update_terms->innovation_covariance) ||
+        if(!std::isfinite(update_terms->normalized_innovation_squared) ||
+           update_terms->normalized_innovation_squared < 0 ||
+           !validVisualPoseCovariance(update_terms->innovation_covariance) ||
            !update_terms->kalman_gain.allFinite() ||
            !update_terms->error_state_correction.allFinite()){return std::nullopt;}
         // Calculate our posterior covariance

@@ -212,10 +212,13 @@ noise model is configured by:
 ```text
 visual_position_stddev_m       = 0.05
 visual_orientation_stddev_rad  = 0.035
+visual_innovation_gate_chi2    = 50.0
 ```
 
 These are initial learning/simulator values and should later be tuned using EKF
-innovation statistics. Measurements are kept in a bounded chronological queue.
+innovation statistics. The initial innovation gate is deliberately conservative:
+visual measurements with NIS above the configured threshold are discarded without
+modifying the filter state. Measurements are kept in a bounded chronological queue.
 If the newest buffered IMU sample is older than a visual timestamp, processing
 waits without extrapolating and retries when the next IMU message arrives.
 

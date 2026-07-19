@@ -606,6 +606,52 @@ namespace vio_node {
                 continue;
             }
 
+            const double position_residual_norm =
+                visual_correction->linearization.residual.segment<3>(
+                    visual_pose::position_index).norm();
+            const double orientation_residual_norm =
+                visual_correction->linearization.residual.segment<3>(
+                    visual_pose::orientation_index).norm();
+            const double position_correction_norm =
+                visual_correction->update_terms.error_state_correction.segment<3>(
+                    error_state::position_index).norm();
+            const double orientation_correction_norm =
+                visual_correction->update_terms.error_state_correction.segment<3>(
+                    error_state::orientation_index).norm();
+            const double nis =
+                visual_correction->update_terms.normalized_innovation_squared;
+
+            if(nis > visualInnovationGateChi2_) {
+                std::size_t remaining_after_rejection = 0;
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex_);
+                    if(estimatorContext_ &&
+                       estimatorContext_->filter_state.nominal_state.stamp ==
+                           current_state.stamp &&
+                       !estimatorContext_->pending_visual_measurements.empty() &&
+                       estimatorContext_->pending_visual_measurements.front().stamp ==
+                           measurement->stamp) {
+                        estimatorContext_->pending_visual_measurements.pop_front();
+                        remaining_after_rejection =
+                            estimatorContext_->pending_visual_measurements.size();
+                    }
+                    else {return;}  // Snapshot no longer matches
+                }
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Rejected visual measurement: stamp=%.9f s, nis=%.3f, threshold=%.3f, residual_position=%.6f m, residual_orientation=%.6f rad, pending=%zu",
+                    measurement->stamp.seconds(),
+                    nis,
+                    visualInnovationGateChi2_,
+                    position_residual_norm,
+                    orientation_residual_norm,
+                    remaining_after_rejection
+                );
+                continue;
+            }
+
             bool correction_stored = false;
             bool stale_snapshot_detected = false;
             std::size_t remaining_measurements = 0;
@@ -641,24 +687,13 @@ namespace vio_node {
             if(correction_stored) {
                 const auto& corrected_state =
                     visual_correction->corrected_filter_state.nominal_state;
-                const double position_residual_norm =
-                    visual_correction->linearization.residual.segment<3>(
-                        visual_pose::position_index).norm();
-                const double orientation_residual_norm =
-                    visual_correction->linearization.residual.segment<3>(
-                        visual_pose::orientation_index).norm();
-                const double position_correction_norm =
-                    visual_correction->update_terms.error_state_correction.segment<3>(
-                        error_state::position_index).norm();
-                const double orientation_correction_norm =
-                    visual_correction->update_terms.error_state_correction.segment<3>(
-                        error_state::orientation_index).norm();
                 RCLCPP_INFO_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "Visual correction applied: stamp=%.9f s, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
+                    "Visual correction applied: stamp=%.9f s, nis: %.3f, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
                     measurement->stamp.seconds(),
+                    nis,
                     position_residual_norm,
                     orientation_residual_norm,
                     position_correction_norm,
