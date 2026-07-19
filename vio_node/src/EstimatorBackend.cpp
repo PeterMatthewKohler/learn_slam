@@ -574,9 +574,39 @@ namespace vio_node {
                 return;
             }
 
-            // The EKF visual correction will be applied here. Both the nominal
-            // state and visual measurement now describe the same timestamp.
-            bool handoff_stored = false;
+            // Apply the visual correction after IMU propagation has aligned the
+            // predicted filter state and visual measurement timestamps.
+            const auto visual_correction =
+                error_state_ekf::correctFilterStateWithVisualPose(
+                    *propagated_filter_state,
+                    *measurement);
+            // Validate success and stamps line up
+            if(!visual_correction ||
+               visual_correction->corrected_filter_state.nominal_state.stamp !=
+                   measurement->stamp) {
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex_);
+                    if(estimatorContext_ &&
+                       estimatorContext_->filter_state.nominal_state.stamp ==
+                           current_state.stamp &&
+                       !estimatorContext_->pending_visual_measurements.empty() &&
+                       estimatorContext_->pending_visual_measurements.front().stamp ==
+                           measurement->stamp) {
+                        estimatorContext_->pending_visual_measurements.pop_front();
+                    }
+                    else {return;}  // Snapshot no longer matches
+                }
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Visual correction at %.9f s failed; discarded measurement",
+                    measurement->stamp.seconds()
+                );
+                continue;
+            }
+
+            bool correction_stored = false;
             bool stale_snapshot_detected = false;
             std::size_t remaining_measurements = 0;
             {
@@ -590,11 +620,12 @@ namespace vio_node {
                     stale_snapshot_detected = true;
                 }
                 else {
-                    estimatorContext_->filter_state = *propagated_filter_state;
+                    estimatorContext_->filter_state =
+                        visual_correction->corrected_filter_state;
                     estimatorContext_->pending_visual_measurements.pop_front();
                     remaining_measurements =
                         estimatorContext_->pending_visual_measurements.size();
-                    handoff_stored = true;
+                    correction_stored = true;
                 }
             }
 
@@ -603,25 +634,39 @@ namespace vio_node {
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "Discarded prepared visual handoff because estimator state or queue advanced concurrently"
+                    "Discarded visual correction because estimator state or queue advanced concurrently"
                 );
                 return;
             }
-            if(handoff_stored) {
+            if(correction_stored) {
+                const auto& corrected_state =
+                    visual_correction->corrected_filter_state.nominal_state;
+                const double position_residual_norm =
+                    visual_correction->linearization.residual.segment<3>(
+                        visual_pose::position_index).norm();
+                const double orientation_residual_norm =
+                    visual_correction->linearization.residual.segment<3>(
+                        visual_pose::orientation_index).norm();
+                const double position_correction_norm =
+                    visual_correction->update_terms.error_state_correction.segment<3>(
+                        error_state::position_index).norm();
+                const double orientation_correction_norm =
+                    visual_correction->update_terms.error_state_correction.segment<3>(
+                        error_state::orientation_index).norm();
                 RCLCPP_INFO_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
-                    "Visual measurement handoff ready: stamp=%.9f s, position_world_imu=[%.9f, %.9f, %.9f] m, world_from_imu_xyzw=[%.9f, %.9f, %.9f, %.9f], quaternion_norm=%.9f, pending=%zu",
+                    "Visual correction applied: stamp=%.9f s, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
                     measurement->stamp.seconds(),
-                    measurement->position_world_imu.x(),
-                    measurement->position_world_imu.y(),
-                    measurement->position_world_imu.z(),
-                    measurement->world_from_imu.x(),
-                    measurement->world_from_imu.y(),
-                    measurement->world_from_imu.z(),
-                    measurement->world_from_imu.w(),
-                    measurement->world_from_imu.norm(),
+                    position_residual_norm,
+                    orientation_residual_norm,
+                    position_correction_norm,
+                    orientation_correction_norm,
+                    corrected_state.position_world_imu.x(),
+                    corrected_state.position_world_imu.y(),
+                    corrected_state.position_world_imu.z(),
+                    corrected_state.world_from_imu.norm(),
                     remaining_measurements
                 );
             }
