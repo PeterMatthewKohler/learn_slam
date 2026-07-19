@@ -147,38 +147,43 @@ namespace vio_node {
         return next;
     }
 
-    std::optional<EstimatorState>
-    VIONode::propagateEstimatorStateThroughMeasurements(
-        const EstimatorState& initial_state,
-        const std::vector<ImuMeasurement>& measurements,
-        const Eigen::Vector3d& gravity_world) const
+  std::optional<FilterState> VIONode::propagateEstimatorStateThroughMeasurements(
+      const FilterState& initial_filter_state,
+      const std::vector<ImuMeasurement>& measurements,
+      const Eigen::Vector3d& gravity_world) const
     {
+        // Validation
         if(measurements.size() < std::size_t(2) ||
-           !validation::useSameClock(
-               measurements.front().stamp,
-               initial_state.stamp) ||
-           measurements.front().stamp != initial_state.stamp) {
-            return std::nullopt;
+           !validation::useSameClock(measurements.front().stamp, initial_filter_state.nominal_state.stamp) ||
+           measurements.front().stamp != initial_filter_state.nominal_state.stamp) {return std::nullopt;}
+        if(!error_state_ekf::validateFilterState(initial_filter_state)){return std::nullopt;}
+        // Initialize
+        FilterState propagated_filter_state = initial_filter_state;
+        // Propagate through every IMU interval
+        for(std::size_t i = 1; i < measurements.size(); i++) {
+            // Propagate estimator state
+            const auto estimator_state = propagateEstimatorState(
+                propagated_filter_state.nominal_state,
+                measurements[i-1],
+                measurements[i],
+                gravity_world);
+            if(!estimator_state){return std::nullopt;}
+            // Propagate state covariance matrix
+            const auto updated_filter = error_state_ekf::propagateFilterStateCovariance(
+                propagated_filter_state,
+                *estimator_state,
+                measurements[i-1],
+                measurements[i],
+                imuNoiseParameters_);
+            // If successful, assign back to filter state
+            if(!updated_filter){return std::nullopt;}
+            propagated_filter_state = *updated_filter;
         }
-
-        EstimatorState propagated_state = initial_state;
-        for(std::size_t index = 1; index < measurements.size(); ++index) {
-            const auto next_state = propagateEstimatorState(
-                propagated_state,
-                measurements[index - 1],
-                measurements[index],
-                gravity_world
-            );
-            if(!next_state) {
-                return std::nullopt;
-            }
-            propagated_state = *next_state;
-        }
-
-        if(propagated_state.stamp != measurements.back().stamp) {
-            return std::nullopt;
-        }
-        return propagated_state;
+        // Validate before returning
+        if(!error_state_ekf::validateFilterState(propagated_filter_state)){return std::nullopt;}
+        // Final propagated state matches final imu measurement timestamp
+        if(propagated_filter_state.nominal_state.stamp != measurements.back().stamp){return std::nullopt;}
+        return propagated_filter_state;
     }
 
     std::optional<VisualCameraPose> VIONode::visualCameraPoseFromEstimatorState(
@@ -424,14 +429,11 @@ namespace vio_node {
                 buffer = imuBuffer_;
                 initialization = estimatorContext_->initialization;
                 current_filter_state = estimatorContext_->filter_state;
-                measurement =
-                    estimatorContext_->pending_visual_measurements.front();
-                pending_measurement_count =
-                    estimatorContext_->pending_visual_measurements.size();
+                measurement = estimatorContext_->pending_visual_measurements.front();
+                pending_measurement_count = estimatorContext_->pending_visual_measurements.size();
             }
 
-            if(!error_state_ekf::validateFilterState(
-                   *current_filter_state)) {
+            if(!error_state_ekf::validateFilterState(*current_filter_state)) {
                 RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -440,8 +442,7 @@ namespace vio_node {
                 );
                 return;
             }
-            const EstimatorState& current_state =
-                current_filter_state->nominal_state;
+            const EstimatorState& current_state = current_filter_state->nominal_state;
 
             if(!validateVisualPoseMeasurement(*measurement)) {
                 RCLCPP_ERROR_THROTTLE(
@@ -459,9 +460,7 @@ namespace vio_node {
                 }
                 continue;
             }
-            if(!validation::useSameClock(
-                   measurement->stamp,
-                   current_state.stamp)) {
+            if(!validation::useSameClock(measurement->stamp, current_state.stamp)) {
                 RCLCPP_ERROR_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -560,21 +559,18 @@ namespace vio_node {
                 return;
             }
 
-            const auto propagated_state =
-                propagateEstimatorStateThroughMeasurements(
-                    current_state,
-                    *imu_measurements,
-                    initialization->gravity_world
-                );
-            if(!propagated_state ||
-               propagated_state->stamp != measurement->stamp) {
+            const auto propagated_filter_state =
+                propagateEstimatorStateThroughMeasurements(*current_filter_state,
+                                                           *imu_measurements,
+                                                           initialization->gravity_world);
+            if(!propagated_filter_state ||
+                propagated_filter_state->nominal_state.stamp != measurement->stamp) {
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
                     "Estimator propagation to pending visual measurement at %.9f s failed",
-                    measurement->stamp.seconds()
-                );
+                    measurement->stamp.seconds());
                 return;
             }
 
@@ -594,8 +590,7 @@ namespace vio_node {
                     stale_snapshot_detected = true;
                 }
                 else {
-                    estimatorContext_->filter_state.nominal_state =
-                        *propagated_state;
+                    estimatorContext_->filter_state = *propagated_filter_state;
                     estimatorContext_->pending_visual_measurements.pop_front();
                     remaining_measurements =
                         estimatorContext_->pending_visual_measurements.size();

@@ -131,8 +131,8 @@ namespace vio_node {
             const ImuMeasurement& start_measurement,
             const ImuMeasurement& end_measurement,
             const Eigen::Vector3d& gravity_world) const;
-        std::optional<EstimatorState> propagateEstimatorStateThroughMeasurements(
-            const EstimatorState& initial_state,
+        std::optional<FilterState> propagateEstimatorStateThroughMeasurements(
+            const FilterState& initial_filter_state,
             const std::vector<ImuMeasurement>& measurements,
             const Eigen::Vector3d& gravity_world) const;
         std::optional<VisualCameraPose> visualCameraPoseFromEstimatorState(
