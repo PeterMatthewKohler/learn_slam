@@ -505,4 +505,107 @@ namespace vio_node::error_state_ekf {
         return posterior_covariance;
     }
 
+    std::optional<FilterState> injectErrorStateCorrection(
+        const FilterState& predicted_filter_state,
+        const ErrorStateVector& error_state_correction,
+        const ErrorStateCovariance& posterior_covariance)
+    {
+        // Validate input filter state and posterior covariance
+        if(!validateFilterState(predicted_filter_state) ||
+           !validErrorStateCovariance(posterior_covariance)){return std::nullopt;}
+        // Validate corrections
+        if(!error_state_correction.allFinite()){return std::nullopt;}
+        // Get our correction blocks
+        Eigen::Vector3d delta_position, delta_orientation, delta_velocity,
+                        delta_gyroscope_bias, delta_accelerometer_bias;
+        delta_position = error_state_correction.segment<error_state::block_size>
+                            (error_state::position_index);
+        delta_orientation = error_state_correction.segment<error_state::block_size>
+                                (error_state::orientation_index);
+        delta_velocity = error_state_correction.segment<error_state::block_size>
+                            (error_state::velocity_index);
+        delta_gyroscope_bias = error_state_correction.segment<error_state::block_size>
+                                (error_state::gyroscope_bias_index);
+        delta_accelerometer_bias = error_state_correction.segment<error_state::block_size>
+                                    (error_state::accelerometer_bias_index);
+        // Apply additive components
+        FilterState corrected_filter_state = predicted_filter_state;
+        // Position
+        corrected_filter_state.nominal_state.position_world_imu =
+            predicted_filter_state.nominal_state.position_world_imu + delta_position;
+        // Orientation: convert into a quaternion then use right-multiplicative convention
+        double delta_angle = delta_orientation.norm();
+        Eigen::Quaterniond delta_quaternion;
+        if(!std::isfinite(delta_angle)) {
+            return std::nullopt;
+        }
+        if(delta_angle < 1e-8) {
+            delta_quaternion = Eigen::Quaterniond(
+                1.0,
+                0.5 * delta_orientation.x(),
+                0.5 * delta_orientation.y(),
+                0.5 * delta_orientation.z()
+            );
+        }
+        else {
+            delta_quaternion = Eigen::Quaterniond(
+                Eigen::AngleAxisd(delta_angle, delta_orientation / delta_angle)
+            );
+        }
+        const double delta_squared_norm = delta_quaternion.squaredNorm();
+        if(!validation::isFinite(delta_quaternion) ||
+           !std::isfinite(delta_squared_norm) ||
+           delta_squared_norm < 1e-12) {
+            return std::nullopt;
+        }
+        delta_quaternion.normalize();
+
+        Eigen::Quaterniond corrected_orientation =
+            predicted_filter_state.nominal_state.world_from_imu *
+            delta_quaternion;
+        const double corrected_squared_norm =
+            corrected_orientation.squaredNorm();
+        if(!validation::isFinite(corrected_orientation) ||
+           !std::isfinite(corrected_squared_norm) ||
+           corrected_squared_norm < 1e-12) {
+            return std::nullopt;
+        }
+        corrected_orientation.normalize();
+        corrected_filter_state.nominal_state.world_from_imu =
+            corrected_orientation;
+        // Velocity
+        corrected_filter_state.nominal_state.velocity_world_imu =
+            predicted_filter_state.nominal_state.velocity_world_imu + delta_velocity;
+        // Gyro Bias
+        corrected_filter_state.nominal_state.gyroscope_bias =
+            predicted_filter_state.nominal_state.gyroscope_bias + delta_gyroscope_bias;
+        // Accelerometer Bias
+        corrected_filter_state.nominal_state.accelerometer_bias =
+            predicted_filter_state.nominal_state.accelerometer_bias + delta_accelerometer_bias;
+
+        // Injecting the estimated error makes the corrected nominal state our new
+        // reference, so the error-state mean is reset to zero. This does not erase
+        // uncertainty; it re-expresses the posterior covariance around that new reference.
+        // Additive state components keep the same coordinates, but the right-multiplicative
+        // orientation error needs this first-order reset Jacobian after the quaternion update.
+        ErrorStateTransitionMatrix reset_jacobian =
+            ErrorStateTransitionMatrix::Identity();
+        reset_jacobian.block<error_state::block_size, error_state::block_size>
+            (error_state::orientation_index, error_state::orientation_index) =
+                Eigen::Matrix3d::Identity() -
+                0.5 * skewSymmetric(delta_orientation);
+        // Validate reset jacobian
+        if(!reset_jacobian.allFinite()){return std::nullopt;}
+        ErrorStateCovariance reset_covariance = reset_jacobian *
+                                                posterior_covariance *
+                                                reset_jacobian.transpose();
+        // Enforce covariance symmetry and validate
+        reset_covariance = 0.5 * (reset_covariance + reset_covariance.transpose());
+        if(!validErrorStateCovariance(reset_covariance)){return std::nullopt;}
+        corrected_filter_state.covariance = reset_covariance;
+        // Validate output
+        if(!validateFilterState(corrected_filter_state)){return std::nullopt;}
+        return corrected_filter_state;
+    }
+
 }  // namespace vio_node::error_state_ekf

@@ -49,6 +49,10 @@ namespace vio_node::error_state_ekf {
         const VisualPoseLinearization& linearization,
         const VisualPoseUpdateTerms& update_terms);
 
+    std::optional<FilterState> injectErrorStateCorrection(
+        const FilterState& predicted_filter_state,
+        const ErrorStateVector& error_state_correction,
+        const ErrorStateCovariance& posterior_covariance);
 }  // namespace vio_node::error_state_ekf
 
 #endif  // ERROR_STATE_EKF_HPP
