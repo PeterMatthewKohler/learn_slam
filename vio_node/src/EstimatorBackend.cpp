@@ -411,6 +411,7 @@ namespace vio_node {
             std::optional<FilterState> current_filter_state;
             std::optional<VisualPoseMeasurement> measurement;
             std::size_t pending_measurement_count = 0;
+            std::size_t consecutive_visual_rejections = 0;
             {
                 std::lock_guard<std::mutex> lock(dataMutex_);
                 if(!estimatorContext_ ||
@@ -423,6 +424,8 @@ namespace vio_node {
                 current_filter_state = estimatorContext_->filter_state;
                 measurement = estimatorContext_->pending_visual_measurements.front();
                 pending_measurement_count = estimatorContext_->pending_visual_measurements.size();
+                consecutive_visual_rejections =
+                    estimatorContext_->consecutive_visual_rejections;
             }
 
             if(!error_state_ekf::validateFilterState(*current_filter_state)) {
@@ -571,7 +574,8 @@ namespace vio_node {
             // that prediction with the corrected state. The snapshot checks
             // keep the state and queue update atomic if callbacks run concurrently.
             const auto commit_processed_filter_state =
-                [&](const FilterState& processed_filter_state)
+                [&](const FilterState& processed_filter_state,
+                    std::size_t updated_consecutive_visual_rejections)
                     -> std::optional<std::size_t> {
                     if(!error_state_ekf::validateFilterState(
                            processed_filter_state) ||
@@ -591,13 +595,15 @@ namespace vio_node {
                     }
 
                     estimatorContext_->filter_state = processed_filter_state;
+                    estimatorContext_->consecutive_visual_rejections =
+                        updated_consecutive_visual_rejections;
                     estimatorContext_->pending_visual_measurements.pop_front();
                     return estimatorContext_->pending_visual_measurements.size();
                 };
 
             // Apply the visual correction after IMU propagation has aligned the
             // predicted filter state and visual measurement timestamps.
-            const auto visual_correction =
+            auto visual_correction =
                 error_state_ekf::correctFilterStateWithVisualPose(
                     *propagated_filter_state,
                     *measurement);
@@ -606,7 +612,10 @@ namespace vio_node {
                visual_correction->corrected_filter_state.nominal_state.stamp !=
                    measurement->stamp) {
                 const auto remaining_measurements =
-                    commit_processed_filter_state(*propagated_filter_state);
+                    commit_processed_filter_state(
+                        *propagated_filter_state,
+                        consecutive_visual_rejections
+                    );
                 if(!remaining_measurements) {
                     RCLCPP_WARN_THROTTLE(
                         get_logger(),
@@ -632,6 +641,138 @@ namespace vio_node {
                 continue;
             }
 
+            const double original_position_residual_norm =
+                visual_correction->linearization.residual.segment<3>(
+                    visual_pose::position_index).norm();
+            const double original_orientation_residual_norm =
+                visual_correction->linearization.residual.segment<3>(
+                    visual_pose::orientation_index).norm();
+            const double original_nis =
+                visual_correction->update_terms.normalized_innovation_squared;
+            const std::size_t updated_rejection_count =
+                consecutive_visual_rejections + std::size_t(1);
+            bool reacquisition_applied = false;
+
+            if(original_nis > visualInnovationGateChi2_ &&
+               updated_rejection_count >=
+                   visualReacquisitionRejectionCount_) {
+                // A long rejection streak means the propagated covariance no
+                // longer represents the observed disagreement. Inflate the
+                // complete prior covariance so it remains symmetric positive
+                // definite, then rerun the normal EKF correction and gate it
+                // again. This is a bounded recovery attempt, not a forced
+                // measurement acceptance.
+                FilterState inflated_filter_state = *propagated_filter_state;
+                inflated_filter_state.covariance *=
+                    visualReacquisitionCovarianceScale_;
+                inflated_filter_state.covariance = 0.5 *
+                    (inflated_filter_state.covariance +
+                     inflated_filter_state.covariance.transpose());
+
+                if(error_state_ekf::validateFilterState(
+                       inflated_filter_state)) {
+                    const auto reacquisition_correction =
+                        error_state_ekf::correctFilterStateWithVisualPose(
+                            inflated_filter_state,
+                            *measurement
+                        );
+                    if(reacquisition_correction &&
+                       reacquisition_correction->corrected_filter_state
+                               .nominal_state.stamp == measurement->stamp) {
+                        const double reacquisition_nis =
+                            reacquisition_correction->update_terms
+                                .normalized_innovation_squared;
+                        const double reacquisition_position_correction_norm =
+                            reacquisition_correction->update_terms
+                                .error_state_correction.segment<3>(
+                                    error_state::position_index).norm();
+                        const double reacquisition_orientation_correction_norm =
+                            reacquisition_correction->update_terms
+                                .error_state_correction.segment<3>(
+                                    error_state::orientation_index).norm();
+
+                        if(reacquisition_nis <= visualInnovationGateChi2_ &&
+                           reacquisition_position_correction_norm <=
+                               visualReacquisitionMaxPositionCorrectionM_ &&
+                           reacquisition_orientation_correction_norm <=
+                               visualReacquisitionMaxOrientationCorrectionRad_) {
+                            visual_correction = reacquisition_correction;
+                            reacquisition_applied = true;
+                        }
+                        else {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(),
+                                *get_clock(),
+                                1000,
+                                "Visual reacquisition retry rejected: stamp=%.9f s, rejection_count=%zu, original_nis=%.3f, retry_nis=%.3f, correction_position=%.6f/%.6f m, correction_orientation=%.6f/%.6f rad",
+                                measurement->stamp.seconds(),
+                                updated_rejection_count,
+                                original_nis,
+                                reacquisition_nis,
+                                reacquisition_position_correction_norm,
+                                visualReacquisitionMaxPositionCorrectionM_,
+                                reacquisition_orientation_correction_norm,
+                                visualReacquisitionMaxOrientationCorrectionRad_
+                            );
+                        }
+                    }
+                    else {
+                        RCLCPP_WARN_THROTTLE(
+                            get_logger(),
+                            *get_clock(),
+                            1000,
+                            "Visual reacquisition correction failed at %.9f s",
+                            measurement->stamp.seconds()
+                        );
+                    }
+                }
+                else {
+                    RCLCPP_ERROR_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Visual reacquisition produced an invalid inflated filter state"
+                    );
+                }
+            }
+
+            if(original_nis > visualInnovationGateChi2_ &&
+               !reacquisition_applied) {
+                const auto remaining_after_rejection =
+                    commit_processed_filter_state(
+                        *propagated_filter_state,
+                        updated_rejection_count
+                    );
+                if(!remaining_after_rejection) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        1000,
+                        "Discarded visual rejection because estimator state or queue advanced concurrently"
+                    );
+                    return;
+                }
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Rejected visual measurement: stamp=%.9f s, rejection_count=%zu, nis=%.3f, threshold=%.3f, residual_position=%.6f m, residual_orientation=%.6f rad, pending=%zu",
+                    measurement->stamp.seconds(),
+                    updated_rejection_count,
+                    original_nis,
+                    visualInnovationGateChi2_,
+                    original_position_residual_norm,
+                    original_orientation_residual_norm,
+                    *remaining_after_rejection
+                );
+                publishEstimatorOutput(
+                    *propagated_filter_state,
+                    *propagated_filter_state,
+                    *imu_measurements
+                );
+                continue;
+            }
+
             const double position_residual_norm =
                 visual_correction->linearization.residual.segment<3>(
                     visual_pose::position_index).norm();
@@ -647,40 +788,9 @@ namespace vio_node {
             const double nis =
                 visual_correction->update_terms.normalized_innovation_squared;
 
-            if(nis > visualInnovationGateChi2_) {
-                const auto remaining_after_rejection =
-                    commit_processed_filter_state(*propagated_filter_state);
-                if(!remaining_after_rejection) {
-                    RCLCPP_WARN_THROTTLE(
-                        get_logger(),
-                        *get_clock(),
-                        1000,
-                        "Discarded visual rejection because estimator state or queue advanced concurrently"
-                    );
-                    return;
-                }
-                RCLCPP_WARN_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    1000,
-                    "Rejected visual measurement: stamp=%.9f s, nis=%.3f, threshold=%.3f, residual_position=%.6f m, residual_orientation=%.6f rad, pending=%zu",
-                    measurement->stamp.seconds(),
-                    nis,
-                    visualInnovationGateChi2_,
-                    position_residual_norm,
-                    orientation_residual_norm,
-                    *remaining_after_rejection
-                );
-                publishEstimatorOutput(
-                    *propagated_filter_state,
-                    *propagated_filter_state,
-                    *imu_measurements
-                );
-                continue;
-            }
-
             const auto remaining_measurements = commit_processed_filter_state(
-                visual_correction->corrected_filter_state
+                visual_correction->corrected_filter_state,
+                0
             );
             if(!remaining_measurements) {
                 RCLCPP_WARN_THROTTLE(
@@ -697,9 +807,12 @@ namespace vio_node {
                 get_logger(),
                 *get_clock(),
                 1000,
-                "Visual correction applied: stamp=%.9f s, nis: %.3f, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
+                "Visual correction applied: stamp=%.9f s, reacquired=%s, rejection_count_before=%zu, nis=%.3f, original_nis=%.3f, residual_position=%.6f m, residual_orientation=%.6f rad, correction_position=%.6f m, correction_orientation=%.6f rad, position_world_imu=[%.6f, %.6f, %.6f] m, quaternion_norm=%.9f, pending=%zu",
                 measurement->stamp.seconds(),
+                reacquisition_applied ? "true" : "false",
+                consecutive_visual_rejections,
                 nis,
+                original_nis,
                 position_residual_norm,
                 orientation_residual_norm,
                 position_correction_norm,

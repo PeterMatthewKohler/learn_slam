@@ -9,6 +9,7 @@
 #include <Eigen/Geometry>
 #include <Eigen/StdVector>
 
+#include <cstddef>
 #include <deque>
 
 namespace vio_node {
@@ -80,6 +81,7 @@ namespace vio_node {
         ImuInitialization initialization;
         FilterState filter_state;
         VisualPoseMeasurementQueue pending_visual_measurements;
+        std::size_t consecutive_visual_rejections = 0;
     };
 
     struct ImuNoiseParameters {

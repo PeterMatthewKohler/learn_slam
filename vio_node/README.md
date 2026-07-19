@@ -222,6 +222,10 @@ noise model is configured by:
 visual_position_stddev_m       = 0.05
 visual_orientation_stddev_rad  = 0.035
 visual_innovation_gate_chi2    = 50.0
+visual_reacquisition_rejection_count              = 5
+visual_reacquisition_covariance_scale              = 10.0
+visual_reacquisition_max_position_correction_m     = 0.2
+visual_reacquisition_max_orientation_correction_rad = 0.1
 ```
 
 These are initial learning/simulator values and should later be tuned using EKF
@@ -229,6 +233,23 @@ innovation statistics. The initial innovation gate is deliberately conservative:
 visual corrections with NIS above the configured threshold are discarded while
 the timestamp-aligned IMU prediction is retained. Measurements are kept in a
 bounded chronological queue.
+
+Persistent rejection can otherwise lock the filter out of all later visual
+updates. After the configured rejection count, the node retries the same update
+with the complete predicted covariance multiplied by the configured scale. The
+retry still has to pass the original NIS gate and the position/orientation
+correction-size limits. A successful retry commits the normal EKF posterior and
+resets the rejection count; a failed retry retains the original IMU prediction.
+This is a bounded reacquisition heuristic for model inconsistency, not a
+replacement for accurate process and measurement covariance models.
+
+A frontend PnP or visual-quality rejection occurs before an EKF measurement
+exists. Because tracking on the following frame uses the rejected frame as its
+new temporal reference, the visual pose chain retains its last valid world pose
+and advances its timestamp with an explicit zero-motion assumption. This drops
+only the rejected relative-motion interval and allows later valid visual poses
+to resume; it does not invoke EKF reacquisition.
+
 If the newest buffered IMU sample is older than a visual timestamp, processing
 waits without extrapolating and retries when the next IMU message arrives.
 

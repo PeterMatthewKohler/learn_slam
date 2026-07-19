@@ -273,5 +273,52 @@ namespace vio_node {
                 "visual_innovation_gate_chi2 must be finite and positive");
         }
 
+        this->declare_parameter("visual_reacquisition_rejection_count", 5);
+        const auto visual_reacquisition_rejection_count =
+            this->get_parameter(
+                "visual_reacquisition_rejection_count").as_int();
+        if(visual_reacquisition_rejection_count < 1) {
+            throw std::invalid_argument(
+                "visual_reacquisition_rejection_count must be at least 1");
+        }
+        visualReacquisitionRejectionCount_ = static_cast<std::size_t>(
+            visual_reacquisition_rejection_count
+        );
+
+        this->declare_parameter(
+            "visual_reacquisition_covariance_scale",
+            10.0
+        );
+        visualReacquisitionCovarianceScale_ = this->get_parameter(
+            "visual_reacquisition_covariance_scale").as_double();
+        if(!std::isfinite(visualReacquisitionCovarianceScale_) ||
+           visualReacquisitionCovarianceScale_ <= 1.0) {
+            throw std::invalid_argument(
+                "visual_reacquisition_covariance_scale must be finite and greater than 1");
+        }
+
+        this->declare_parameter(
+            "visual_reacquisition_max_position_correction_m",
+            0.2
+        );
+        visualReacquisitionMaxPositionCorrectionM_ = this->get_parameter(
+            "visual_reacquisition_max_position_correction_m").as_double();
+        requireFinitePositive(
+            visualReacquisitionMaxPositionCorrectionM_,
+            "visual_reacquisition_max_position_correction_m"
+        );
+
+        this->declare_parameter(
+            "visual_reacquisition_max_orientation_correction_rad",
+            0.1
+        );
+        visualReacquisitionMaxOrientationCorrectionRad_ =
+            this->get_parameter(
+                "visual_reacquisition_max_orientation_correction_rad").as_double();
+        requireFinitePositive(
+            visualReacquisitionMaxOrientationCorrectionRad_,
+            "visual_reacquisition_max_orientation_correction_rad"
+        );
+
     }
 }   // namespace vio_node

@@ -240,6 +240,10 @@ namespace vio_node {
         double visualPositionStddevM_;
         double visualOrientationStddevRad_;
         double visualInnovationGateChi2_;
+        std::size_t visualReacquisitionRejectionCount_;
+        double visualReacquisitionCovarianceScale_;
+        double visualReacquisitionMaxPositionCorrectionM_;
+        double visualReacquisitionMaxOrientationCorrectionRad_;
     };
 
 }   // namespace vio_node

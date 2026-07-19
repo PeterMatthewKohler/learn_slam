@@ -154,14 +154,39 @@ namespace vio_node {
         const int max_features = 500;
         const int detect_every_n_frames = 5;
         std::optional<VisualCameraPose> visual_pose_for_measurement;
-        const auto invalidate_visual_pose_chain = [this]() {
-            visualPoseChain_.reset();
+        const auto advance_visual_pose_chain_without_motion =
+            [this, &stamp]() {
+                if(!visualPoseChain_ ||
+                   visualPoseChain_->stamp.get_clock_type() !=
+                       stamp.get_clock_type() ||
+                   stamp <= visualPoseChain_->stamp) {
+                    return false;
+                }
+
+                // Tracking on the next processed frame estimates the transform
+                // from this frame to the next one. Retain the last valid world
+                // pose, but advance its reference timestamp so one rejected
+                // relative transform cannot permanently invalidate the chain.
+                // This intentionally assumes zero motion over the rejected
+                // interval and is reported by the caller.
+                visualPoseChain_->stamp = stamp;
+                return true;
         };
 
         const bool first_visual_frame = prev_left_rectified_.empty();
         if(first_visual_frame || tracked_features_.empty()) {
             tracked_features_.clear();
-            invalidate_visual_pose_chain();
+            const bool chain_advanced =
+                advance_visual_pose_chain_without_motion();
+            if(chain_advanced) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Visual tracks exhausted; advanced pose-chain reference to %.9f s with zero-motion assumption",
+                    stamp.seconds()
+                );
+            }
             // Add new tracked features
             addNewTrackedFeatures(leftRectImg, rightRectImg, stereoCalib, max_features);
         }
@@ -183,16 +208,20 @@ namespace vio_node {
             const auto pose = estimateRelativeVisualPose(selected, stereoCalib);
 
             if(!pose){
+                const bool chain_advanced =
+                    advance_visual_pose_chain_without_motion();
                 RCLCPP_WARN_STREAM_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     1000,
                     "Visual PnP failed - Candidate Count: " << correspondences.size()
-                    << ", Selected Count: " << selected.size());
-
-                invalidate_visual_pose_chain();
+                    << ", Selected Count: " << selected.size()
+                    << ", Pose Chain Advanced: "
+                    << (chain_advanced ? "true" : "false"));
             }
             else if(!passesVisualPoseQualityChecks(*pose)){
+                const bool chain_advanced =
+                    advance_visual_pose_chain_without_motion();
                 RCLCPP_WARN_STREAM_THROTTLE(
                     get_logger(),
                     *get_clock(),
@@ -200,9 +229,9 @@ namespace vio_node {
                     "Visual pose rejected - Inlier Count: " << pose->inlier_indices.size()
                     << ", Inlier Ratio: " << pose->inlier_ratio
                     << ", Reprojection RMSE(px): " << pose->reprojection_rmse_px
-                    << ", Median 3D Error(m): " << pose->median_3d_error_m);
-
-                invalidate_visual_pose_chain();
+                    << ", Median 3D Error(m): " << pose->median_3d_error_m
+                    << ", Pose Chain Advanced: "
+                    << (chain_advanced ? "true" : "false"));
             }
             else if(visualPoseChain_) {  // Relative visual pose valid
                 if(visualPoseChain_->stamp.get_clock_type() !=
@@ -214,7 +243,6 @@ namespace vio_node {
                         1000,
                         "Cannot compose visual pose with a non-increasing or mismatched timestamp"
                     );
-                    invalidate_visual_pose_chain();
                 }
                 else {
                     // Perform pose composition
@@ -224,13 +252,15 @@ namespace vio_node {
                             *pose
                         );
                     if(!composed){
-                        invalidate_visual_pose_chain();
+                        const bool chain_advanced =
+                            advance_visual_pose_chain_without_motion();
 
                         RCLCPP_WARN_THROTTLE(
                             get_logger(),
                             *get_clock(),
                             1000,
-                            "Visual camera pose composition failed");
+                            "Visual camera pose composition failed; pose-chain reference advanced=%s",
+                            chain_advanced ? "true" : "false");
                     }
                     else{
                         visualPoseChain_->camera_pose = *composed;
